@@ -1,0 +1,5800 @@
+Index: build/jam/HaikuImage
+===================================================================
+--- build/jam/HaikuImage	(revision 37397)
++++ build/jam/HaikuImage	(working copy)
+@@ -60,6 +60,7 @@
+ 	<bin>updatedb uptime urlwrapper useradd uudecode uuencode
+ 	vdir version vmstat waitfor watch wc wget whoami xargs xres yes
+ 	zdiff zforce zgrep zip zipcloak <bin>zipgrep zipnote zipsplit zmore znew
++	raw_client raw_server udp_client udp_server
+ ;
+ 
+ SYSTEM_APPS = AboutSystem ActivityMonitor CharacterMap CodyCam DeskCalc Devices
+@@ -108,9 +109,9 @@
+ 
+ SYSTEM_NETWORK_DEVICES = ethernet loopback ;
+ SYSTEM_NETWORK_DATALINK_PROTOCOLS = ethernet_frame <module>arp loopback_frame
+-	ipv4_datagram ;
++	ipv4_datagram ipv6_datagram ;
+ #SYSTEM_NETWORK_PPP = ipcp modem pap pppoe ;
+-SYSTEM_NETWORK_PROTOCOLS = ipv4 tcp udp icmp unix ;
++SYSTEM_NETWORK_PROTOCOLS = ipv4 ipv6 tcp udp icmp unix ;
+ 
+ SYSTEM_ADD_ONS_ACCELERANTS = $(X86_ONLY)radeon.accelerant
+ 	$(X86_ONLY)nvidia.accelerant $(X86_ONLY)matrox.accelerant
+Index: build/jam/UserBuildConfig
+===================================================================
+--- build/jam/UserBuildConfig	(revision 0)
++++ build/jam/UserBuildConfig	(revision 0)
+@@ -0,0 +1,40 @@
++# Quick start file for UserBuildConfig. Copy it and uncomment and edit the
++# lines you want. See UserBuildConfig.ReadMe for details.
++
++# Specify image size in MB.
++#HAIKU_IMAGE_SIZE	= 100 ;
++
++# Install Haiku in directory /Haiku.
++#HAIKU_INSTALL_DIR = /Haiku ;
++
++# Install Haiku on device /dev/sda57. Be sure you know what you're doing!
++#HAIKU_IMAGE_DIR	= /dev ;
++#HAIKU_IMAGE_NAME	= sda57 ;
++#HAIKU_DONT_CLEAR_IMAGE = 1 ;
++
++
++# Enable debugging for directory src/system/boot/loader recursively.
++#SetConfigVar DEBUG : HAIKU_TOP src system boot loader : 1 : global ;
++
++
++# Add symlink/file (timezone and keymap settings) to the image.
++#AddSymlinkToHaikuImage home config settings
++#	: /boot/system/data/timezones/Europe/Paris : timezone ;
++#AddFilesToHaikuImage home config settings : <keymap>US-International
++#	: Key_map ;
++
++# Copy artwork to the image.
++#CopyDirectoryToHaikuImage home Desktop : $(HAIKU_TOP)/data/artwork : : -x .svn ;
++
++
++# Add the optional package WonderBrush to the image.
++#AddOptionalHaikuImagePackages WonderBrush ;
++
++# Don't add the libraries built with the alternative gcc version.
++#HAIKU_ADD_ALTERNATIVE_GCC_LIBS = 0 ;
++
++
++#AddFilesToHaikuImage home config bin : raw_client raw_server;
++#AddFilesToHaikuImage home config bin : udp_client udp_server;
++
++AddSymlinkToHaikuImage home Desktop : /boot/system/apps/Terminal : Terminal ;
+Index: src/tests/kits/net/Jamfile
+===================================================================
+--- src/tests/kits/net/Jamfile	(revision 37397)
++++ src/tests/kits/net/Jamfile	(working copy)
+@@ -12,9 +12,6 @@
+ SimpleTest tcp_server : tcp_server.c : $(TARGET_NETWORK_LIBS) ;
+ SimpleTest tcp_client : tcp_client.c : $(TARGET_NETWORK_LIBS) ;
+ 
+-SimpleTest ipv46_server : ipv46_server.cpp : $(TARGET_NETWORK_LIBS) ;
+-SimpleTest ipv46_client : ipv46_client.cpp : $(TARGET_NETWORK_LIBS) ;
+-
+ SimpleTest getpeername : getpeername.cpp : $(TARGET_NETWORK_LIBS) ;
+ 
+ SimpleTest tcp_connection_test : tcp_connection_test.cpp
+@@ -27,6 +24,7 @@
+ 	: $(TARGET_NETWORK_LIBS) $(HAIKU_NETAPI_LIB) be $(TARGET_LIBSUPC++) ;
+ 
+ SubInclude HAIKU_TOP src tests kits net DialUpPreflet ;
++SubInclude HAIKU_TOP src tests kits net ipv6 ;
+ SubInclude HAIKU_TOP src tests kits net multicast ;
+ SubInclude HAIKU_TOP src tests kits net netperf ;
+ SubInclude HAIKU_TOP src tests kits net preflet ;
+Index: src/tests/kits/net/ipv6/udp_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/udp_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/udp_server.cpp	(revision 0)
+@@ -0,0 +1,86 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++recvLoop(int fd)
++{
++	for (;;) {
++		char buffer[1000];
++		sockaddr_storage address;
++		socklen_t socklen = sizeof(address);
++		memset(&address, 0, socklen);
++
++		int status = recvfrom(fd, buffer, sizeof(buffer) - 1, 0,
++			(sockaddr *) &address, &socklen);
++		if (status < 0) {
++			perror("recvfrom");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, buffer);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &localAddress;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &localAddress;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		// loopback
++		sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	if (bind(fd, (sockaddr *)&localAddress, socketFamily == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	for (;;)
++		recvLoop(fd);
++}
+Index: src/tests/kits/net/ipv6/raw_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/raw_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/raw_server.cpp	(revision 0)
+@@ -0,0 +1,86 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PROTOCOL = 89;
++
++
++void
++recvLoop(int fd)
++{
++	for (;;) {
++		char buffer[1000];
++		sockaddr_storage address;
++		socklen_t socklen = sizeof(address);
++		memset(&address, 0, socklen);
++
++		int status = recvfrom(fd, buffer, sizeof(buffer) - 1, 0,
++			(sockaddr *) &address, &socklen);
++		if (status < 0) {
++			perror("recvfrom");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			char *p = buffer;
++			if (address.ss_family == AF_INET && status >= sizeof(struct ip))
++				p += sizeof(struct ip);
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, p);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_RAW, TEST_PROTOCOL);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &localAddress;
++		sa->sin_family = AF_INET;
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &localAddress;
++		sa->sin6_family = AF_INET6;
++	}
++
++	// TODO: is this even necessary?
++	if (bind(fd, (sockaddr *)&localAddress, socketFamily == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	for (;;)
++		recvLoop(fd);
++}
+Index: src/tests/kits/net/ipv6/tcp_udp_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/tcp_udp_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/tcp_udp_server.cpp	(revision 0)
+@@ -0,0 +1,140 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++usage()
++{
++	printf("server [tcp|udp] [4|6] [local-address]\n");
++	exit(1);
++}
++
++
++void
++recvLoop(int fd)
++{
++	for (;;)	{
++		char buffer[1000];
++		int status = recv(fd, buffer, sizeof(buffer) - 1, 0);
++		if (status < 0) {
++			perror("recv");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, buffer);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketType = SOCK_DGRAM;
++	int socketFamily = AF_INET;
++	if (argc > 1) {
++		if (!strcmp(argv[1], "tcp"))
++			socketType = SOCK_STREAM;
++		else if (!strcmp(argv[1], "udp"))
++			socketType = SOCK_DGRAM;
++		else
++			usage();
++	}
++	if (argc > 2) {
++		switch (atoi(argv[2])) {
++		case 4:
++			socketFamily = AF_INET;
++			break;
++		case 6:
++			socketFamily = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	localAddress.ss_family = socketFamily;
++	((sockaddr_in *) &localAddress)->sin_port = htons(TEST_PORT);
++
++	if (argc > 3) {
++		do {
++			void *dstBuffer = &((sockaddr_in *) &localAddress)->sin_addr;
++			if (inet_pton(AF_INET, argv[3], dstBuffer) == 1) {
++				printf("using IPv4 local address\n");
++				localAddress.ss_family = AF_INET;
++				break;
++			}
++
++			dstBuffer = &((sockaddr_in6 *) &localAddress)->sin6_addr;
++			if (inet_pton(AF_INET6, argv[3], dstBuffer) == 1) {
++				printf("using IPv6 local address\n");
++				localAddress.ss_family = AF_INET6;
++				break;
++			}
++
++			usage();
++		} while (false);
++	}
++
++	int fd = socket(socketFamily, socketType, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	if (bind(fd, (sockaddr *)&localAddress, localAddress.ss_family == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	switch (socketType) {
++	case SOCK_DGRAM:
++		for (;;)
++			recvLoop(fd);
++		break;
++	case SOCK_STREAM:
++		if (listen(fd, 5) < 0) {
++			perror("listen");
++			return 1;
++		}
++		for (;;) {
++			int clientfd = accept(fd, NULL, 0);
++			if (clientfd < 0) {
++				perror("accept");
++				return 1;
++			}
++			printf("TCP server: got some client!\n");
++			if (fork() != 0) {
++				// parent code
++				close(clientfd);
++				continue;
++			}
++			// child code
++			close(fd);
++			recvLoop(clientfd);
++			exit(0);
++		}
++		break;
++	}
++}
+Index: src/tests/kits/net/ipv6/Jamfile
+===================================================================
+--- src/tests/kits/net/ipv6/Jamfile	(revision 0)
++++ src/tests/kits/net/ipv6/Jamfile	(revision 0)
+@@ -0,0 +1,10 @@
++SubDir HAIKU_TOP src tests kits net ipv6 ;
++
++SimpleTest raw_server : raw_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest raw_client : raw_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest udp_server : udp_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest udp_client : udp_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest tcp_udp_server : tcp_udp_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest tcp_udp_client : tcp_udp_client.cpp : $(TARGET_NETWORK_LIBS) ;
+Index: src/tests/kits/net/ipv6/udp_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/udp_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/udp_client.cpp	(revision 0)
+@@ -0,0 +1,72 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++		sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		sa->sin6_addr.s6_addr[15] = 0x01; // loopback
++
++		// 2001::1
++		// sa->sin6_addr.s6_addr[0] = 0x20;
++		// sa->sin6_addr.s6_addr[1] = 0x01;
++		// sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/raw_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/raw_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/raw_client.cpp	(revision 0)
+@@ -0,0 +1,65 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PROTOCOL = 89;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_RAW, TEST_PROTOCOL);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_addr.s6_addr[15] = 0x01; // loopback
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/tcp_udp_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/tcp_udp_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/tcp_udp_client.cpp	(revision 0)
+@@ -0,0 +1,98 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++usage()
++{
++	printf("client [tcp|udp] [4|6] [4|6]\n");
++	exit(1);
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketType = SOCK_DGRAM;
++	int socketFamily1 = AF_INET;
++	int socketFamily2 = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "tcp"))
++			socketType = SOCK_STREAM;
++		else if (!strcmp(argv[1], "udp"))
++			socketType = SOCK_DGRAM;
++		else
++			usage();
++	}
++	if (argc > 2) {
++		switch (atoi(argv[2])) {
++		case 4:
++			socketFamily1 = AF_INET;
++			break;
++		case 6:
++			socketFamily1 = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++	if (argc > 3) {
++		switch (atoi(argv[3])) {
++		case 4:
++			socketFamily2 = AF_INET;
++			break;
++		case 6:
++			socketFamily2 = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++
++	int fd = socket(socketFamily1, socketType, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	saddr.ss_family = socketFamily2;
++	((sockaddr_in *) &saddr)->sin_port = htons(TEST_PORT);
++	if (connect(fd, (sockaddr *) &saddr, socketFamily2 == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("connect");
++		close(fd);
++		return -1;
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = send(fd, buffer, length, 0);
++	if (status < length) {
++		if (status < 0)
++			perror("send");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/Jamfile
+===================================================================
+--- src/tests/kits/Jamfile	(revision 37397)
++++ src/tests/kits/Jamfile	(working copy)
+@@ -12,4 +12,3 @@
+ SubInclude HAIKU_TOP src tests kits support ;
+ SubInclude HAIKU_TOP src tests kits translation ;
+ SubInclude HAIKU_TOP src tests kits opengl ;
+-
+Index: src/add-ons/kernel/network/protocols/ipv4/ipv4.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv4/ipv4.cpp	(revision 37397)
++++ src/add-ons/kernel/network/protocols/ipv4/ipv4.cpp	(working copy)
+@@ -35,7 +35,7 @@
+ #include <utility>
+ 
+ 
+-//#define TRACE_IPV4
++#define TRACE_IPV4
+ #ifdef TRACE_IPV4
+ #	define TRACE(format, args...) \
+ 		dprintf("IPv4 [%llu] " format "\n", system_time() , ##args)
+@@ -1098,6 +1098,7 @@
+ ipv4_control(net_protocol* _protocol, int level, int option, void* value,
+ 	size_t* _length)
+ {
++//    dprintf("ipv4_control\n");
+ 	if ((level & LEVEL_MASK) != IPPROTO_IP)
+ 		return sDatalinkModule->control(sDomain, option, value, _length);
+ 
+Index: src/add-ons/kernel/network/protocols/ipv4/ipv4_address.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv4/ipv4_address.cpp	(revision 37397)
++++ src/add-ons/kernel/network/protocols/ipv4/ipv4_address.cpp	(working copy)
+@@ -489,14 +489,15 @@
+ 	return B_OK;
+ }
+ 
++
+ static void
+-ipv4_get_loopback_address(sockaddr *result)
++ipv4_get_loopback_address(sockaddr *_address)
+ {
+-	sockaddr_in *resultIn = (sockaddr_in *)result;
+-	memset(resultIn, 0, sizeof(resultIn));
+-	resultIn->sin_len = sizeof(sockaddr_in);
+-	resultIn->sin_family = AF_INET;
+-	resultIn->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	sockaddr_in *address = (sockaddr_in *)_address;
++	memset(address, 0, sizeof(sockaddr_in));
++	address->sin_len = sizeof(sockaddr_in);
++	address->sin_family = AF_INET;
++	address->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+ }
+ 
+ 
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6_address.h
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6_address.h	(revision 0)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6_address.h	(revision 0)
+@@ -0,0 +1,22 @@
++/*
++ * Copyright 2010, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Atis Elsts, the.kfx@gmail.com
++ *
++ */
++#ifndef IPV6_ADDRESS_H
++#define IPV6_ADDRESS_H
++
++#include <netinet6/in6.h>
++
++
++extern struct net_address_module_info gIPv6AddressModule;
++
++
++const char *ip6_sprintf(const in6_addr *addr, char *dst,
++	size_t size = INET6_ADDRSTRLEN);
++
++
++#endif	// IPV6_ADDRESS_H
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp	(revision 0)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp	(revision 0)
+@@ -0,0 +1,1756 @@
++/*
++ * Copyright 2010, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Atis Elsts, the.kfx@gmail.com
++ *
++ * Based on code from ipv4.cpp
++ */
++
++
++#include "ipv6_address.h"
++
++#include <net_datalink.h>
++#include <net_datalink_protocol.h>
++#include <net_device.h>
++#include <net_protocol.h>
++#include <net_stack.h>
++#include <NetBufferUtilities.h>
++#include <ProtocolUtilities.h>
++
++#include <ByteOrder.h>
++#include <KernelExport.h>
++#include <util/AutoLock.h>
++#include <util/list.h>
++// #include <util/khash.h>
++#include <util/DoublyLinkedList.h>
++// #include <util/MultiHashTable.h>
++
++#include <netinet6/in6.h>
++#include <netinet/ip6.h>
++#include <new>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <utility>
++
++
++#define TRACE_IPV6
++#ifdef TRACE_IPV6
++#	define TRACE(format, args...) \
++		dprintf("IPv6 [%llu] " format "\n", system_time() , ##args)
++#	define TRACE_SK(protocol, format, args...) \
++		dprintf("IPv6 [%llu] %p " format "\n", system_time(), \
++			protocol , ##args)
++#else
++#	define TRACE(args...)		do { } while (0)
++#	define TRACE_SK(args...)	do { } while (0)
++#endif
++
++
++// struct ipv4_header {
++// #if B_HOST_IS_LENDIAN == 1
++// 	uint8		header_length : 4;	// header length in 32-bit words
++// 	uint8		version : 4;
++// #else
++// 	uint8		version : 4;
++// 	uint8		header_length : 4;
++// #endif
++// 	uint8		service_type;
++// 	uint16		total_length;
++// 	uint16		id;
++// 	uint16		fragment_offset;
++// 	uint8		time_to_live;
++// 	uint8		protocol;
++// 	uint16		checksum;
++// 	in_addr_t	source;
++// 	in_addr_t	destination;
++
++// 	uint16 HeaderLength() const { return header_length << 2; }
++// 	uint16 TotalLength() const { return ntohs(total_length); }
++// 	uint16 FragmentOffset() const { return ntohs(fragment_offset); }
++// } _PACKED;
++
++
++// struct ip6_hdr {
++// 	union {
++// 		struct ip6_hdrctl {
++// 			u_int32_t ip6_un1_flow;	/* 20 bits of flow-ID */
++// 			u_int16_t ip6_un1_plen;	/* payload length */
++// 			u_int8_t  ip6_un1_nxt;	/* next header */
++// 			u_int8_t  ip6_un1_hlim;	/* hop limit */
++// 		} ip6_un1;
++// 		u_int8_t ip6_un2_vfc;	/* 4 bits version, top 4 bits class */
++// 	} ip6_ctlun;
++// 	struct in6_addr ip6_src;	/* source address */
++// 	struct in6_addr ip6_dst;	/* destination address */
++// } __packed;
++
++// #define ip6_vfc		ip6_ctlun.ip6_un2_vfc
++// #define ip6_flow	ip6_ctlun.ip6_un1.ip6_un1_flow
++// #define ip6_plen	ip6_ctlun.ip6_un1.ip6_un1_plen
++// #define ip6_nxt		ip6_ctlun.ip6_un1.ip6_un1_nxt
++// #define ip6_hlim	ip6_ctlun.ip6_un1.ip6_un1_hlim
++// #define ip6_hops	ip6_ctlun.ip6_un1.ip6_un1_hlim
++
++
++struct IPv6Header {
++	struct ip6_hdr h;
++
++	uint8 ProtocolVersion() const { return h.ip6_vfc & IPV6_VERSION_MASK; }
++  	uint16 HeaderLength() const;
++ 	uint16 TotalLength() const { return ntohs(h.ip6_plen); }
++	const in6_addr& Dst() const { return h.ip6_dst; }
++	const in6_addr& Src() const { return h.ip6_src; }
++	const uint8 Protocol() const;
++};
++
++
++//#define IP_VERSION_6				6
++
++// fragment flags
++// #define IP_RESERVED_FLAG		0x8000
++// #define IP_DONT_FRAGMENT		0x4000
++// #define IP_MORE_FRAGMENTS		0x2000
++// #define IP_FRAGMENT_OFFSET_MASK	0x1fff
++
++// #define MAX_HASH_FRAGMENTS 		64
++// 	// slots in the fragment packet's hash
++// #define FRAGMENT_TIMEOUT		60000000LL
++// 	// discard fragment after 60 seconds
++
++// typedef DoublyLinkedList<struct net_buffer,
++// 	DoublyLinkedListCLink<struct net_buffer> > FragmentList;
++
++//typedef NetBufferField<uint16, offsetof(ipv6_header, checksum)> IPChecksumField;
++
++// struct ipv6_packet_key {
++// 	in_addr_t	source;
++// 	in_addr_t	destination;
++// 	uint16		id;
++// 	uint8		protocol;
++// };
++
++// class FragmentPacket {
++// public:
++// 							FragmentPacket(const ipv6_packet_key &key);
++// 							~FragmentPacket();
++
++// 			status_t		AddFragment(uint16 start, uint16 end,
++// 								net_buffer* buffer, bool lastFragment);
++// 			status_t		Reassemble(net_buffer* to);
++
++// 			bool			IsComplete() const
++// 								{ return fReceivedLastFragment
++// 									&& fBytesLeft == 0; }
++
++// 	static	uint32			Hash(void* _packet, const void* _key, uint32 range);
++// 	static	int				Compare(void* _packet, const void* _key);
++// 	static	int32			NextOffset()
++// 								{ return offsetof(FragmentPacket, fNext); }
++// 	static	void			StaleTimer(struct net_timer* timer, void* data);
++
++// private:
++// 			FragmentPacket	*fNext;
++// 			struct ipv6_packet_key fKey;
++// 			bool			fReceivedLastFragment;
++// 			int32			fBytesLeft;
++// 			FragmentList	fFragments;
++// 			net_timer		fTimer;
++// };
++
++
++class RawSocket
++	: public DoublyLinkedListLinkImpl<RawSocket>, public DatagramSocket<> {
++public:
++							RawSocket(net_socket* socket);
++};
++
++typedef DoublyLinkedList<RawSocket> RawSocketList;
++
++// typedef MulticastGroupInterface<Ipv6Multicast> Ipv6GroupInterface;
++// typedef MulticastFilter<Ipv6Multicast> Ipv6MulticastFilter;
++
++// struct MulticastStateHash {
++// 	typedef std::pair<const in_addr* , uint32> KeyType;
++// 	typedef Ipv6GroupInterface ValueType;
++
++// 	size_t HashKey(const KeyType &key) const
++// 		{ return key.first->s_addr ^ key.second; }
++// 	size_t Hash(ValueType* value) const
++// 		{ return HashKey(std::make_pair(&value->Address(),
++// 			value->Interface()->index)); }
++// 	bool Compare(const KeyType &key, ValueType* value) const
++// 		{ return value->Interface()->index == key.second
++// 			&& value->Address().s_addr == key.first->s_addr; }
++// 	bool CompareValues(ValueType* value1, ValueType* value2) const
++// 		{ return value1->Interface()->index == value2->Interface()->index
++// 			&& value1->Address().s_addr == value2->Address().s_addr; }
++// 	ValueType*& GetLink(ValueType* value) const { return value->HashLink(); }
++// };
++
++
++struct ipv6_protocol : net_protocol {
++// 	ipv6_protocol()
++// 		:
++// 		multicast_filter(this)
++// 	{
++// 	}
++
++	RawSocket	*raw;
++	uint8		service_type;
++	uint8		time_to_live;
++	uint8		multicast_time_to_live;
++	uint32		flags;
++	struct sockaddr* interface_address; // for IP_MULTICAST_IF
++
++//	Ipv6MulticastFilter multicast_filter;
++};
++
++// protocol flags
++#define IP_FLAG_HEADER_INCLUDED		0x01
++#define IP_FLAG_RECEIVE_DEST_ADDR	0x02
++
++
++static const int kDefaultTTL = 254;
++static const int kDefaultMulticastTTL = 1;
++
++
++extern net_protocol_module_info gIPv6Module;
++	// we need this in ipv6_std_ops() for registering the AF_INET domain
++
++net_stack_module_info* gStackModule;
++net_buffer_module_info* gBufferModule;
++
++static struct net_domain* sDomain;
++static net_datalink_module_info* sDatalinkModule;
++static net_socket_module_info* sSocketModule;
++//static int32 sPacketID;
++static RawSocketList sRawSockets;
++static mutex sRawSocketsLock;
++//static mutex sFragmentLock;
++//static hash_table* sFragmentHash;
++//static mutex sMulticastGroupsLock;
++
++// typedef MultiHashTable<MulticastStateHash> MulticastState;
++// static MulticastState* sMulticastState;
++
++static net_protocol_module_info* sReceivingProtocol[256];
++static mutex sReceivingProtocolLock;
++
++
++uint16
++IPv6Header::HeaderLength() const
++{
++	// TODO: account ext. headers
++	return sizeof(ip6_hdr);
++}
++
++
++const uint8
++IPv6Header::Protocol() const
++{
++	// TODO: account ext. headers
++	return h.ip6_nxt;
++}
++
++
++RawSocket::RawSocket(net_socket* socket)
++	:
++	DatagramSocket<>("ipv6 raw socket", socket)
++{
++}
++
++
++//	#pragma mark -
++
++
++// FragmentPacket::FragmentPacket(const ipv6_packet_key &key)
++// 	:
++// 	fKey(key),
++// 	fReceivedLastFragment(false),
++// 	fBytesLeft(IP_MAXPACKET)
++// {
++// 	gStackModule->init_timer(&fTimer, StaleTimer, this);
++// }
++
++
++// FragmentPacket::~FragmentPacket()
++// {
++// 	// cancel the kill timer
++// 	gStackModule->set_timer(&fTimer, -1);
++
++// 	// delete all fragments
++// 	net_buffer* buffer;
++// 	while ((buffer = fFragments.RemoveHead()) != NULL) {
++// 		gBufferModule->free(buffer);
++// 	}
++// }
++
++
++// status_t
++// FragmentPacket::AddFragment(uint16 start, uint16 end, net_buffer* buffer,
++// 	bool lastFragment)
++// {
++// 	// restart the timer
++// 	gStackModule->set_timer(&fTimer, FRAGMENT_TIMEOUT);
++
++// 	if (start >= end) {
++// 		// invalid fragment
++// 		return B_BAD_DATA;
++// 	}
++
++// 	// Search for a position in the list to insert the fragment
++
++// 	FragmentList::ReverseIterator iterator = fFragments.GetReverseIterator();
++// 	net_buffer* previous = NULL;
++// 	net_buffer* next = NULL;
++// 	while ((previous = iterator.Next()) != NULL) {
++// 		if (previous->fragment.start <= start) {
++// 			// The new fragment can be inserted after this one
++// 			break;
++// 		}
++
++// 		next = previous;
++// 	}
++
++// 	// See if we already have the fragment's data
++
++// 	if (previous != NULL && previous->fragment.start <= start
++// 		&& previous->fragment.end >= end) {
++// 		// we do, so we can just drop this fragment
++// 		gBufferModule->free(buffer);
++// 		return B_OK;
++// 	}
++
++// 	TRACE("    previous: %p, next: %p", previous, next);
++
++// 	// If we have parts of the data already, truncate as needed
++
++// 	if (previous != NULL && previous->fragment.end > start) {
++// 		TRACE("    remove header %d bytes", previous->fragment.end - start);
++// 		gBufferModule->remove_header(buffer, previous->fragment.end - start);
++// 		start = previous->fragment.end;
++// 	}
++// 	if (next != NULL && next->fragment.start < end) {
++// 		TRACE("    remove trailer %d bytes", next->fragment.start - end);
++// 		gBufferModule->remove_trailer(buffer, next->fragment.start - end);
++// 		end = next->fragment.start;
++// 	}
++
++// 	// Now try if we can already merge the fragments together
++
++// 	// We will always keep the last buffer received, so that we can still
++// 	// report an error (in which case we're not responsible for freeing it)
++
++// 	if (previous != NULL && previous->fragment.end == start) {
++// 		fFragments.Remove(previous);
++
++// 		buffer->fragment.start = previous->fragment.start;
++// 		buffer->fragment.end = end;
++
++// 		status_t status = gBufferModule->merge(buffer, previous, false);
++// 		TRACE("    merge previous: %s", strerror(status));
++// 		if (status != B_OK) {
++// 			fFragments.Insert(next, previous);
++// 			return status;
++// 		}
++
++// 		fFragments.Insert(next, buffer);
++
++// 		// cut down existing hole
++// 		fBytesLeft -= end - start;
++
++// 		if (lastFragment && !fReceivedLastFragment) {
++// 			fReceivedLastFragment = true;
++// 			fBytesLeft -= IP_MAXPACKET - end;
++// 		}
++
++// 		TRACE("    hole length: %d", (int)fBytesLeft);
++
++// 		return B_OK;
++// 	} else if (next != NULL && next->fragment.start == end) {
++// 		net_buffer* afterNext = (net_buffer*)next->link.next;
++// 		fFragments.Remove(next);
++
++// 		buffer->fragment.start = start;
++// 		buffer->fragment.end = next->fragment.end;
++
++// 		status_t status = gBufferModule->merge(buffer, next, true);
++// 		TRACE("    merge next: %s", strerror(status));
++// 		if (status != B_OK) {
++// 			// Insert "next" at its previous position
++// 			fFragments.Insert(afterNext, next);
++// 			return status;
++// 		}
++
++// 		fFragments.Insert(afterNext, buffer);
++
++// 		// cut down existing hole
++// 		fBytesLeft -= end - start;
++
++// 		if (lastFragment && !fReceivedLastFragment) {
++// 			fReceivedLastFragment = true;
++// 			fBytesLeft -= IP_MAXPACKET - end;
++// 		}
++
++// 		TRACE("    hole length: %d", (int)fBytesLeft);
++
++// 		return B_OK;
++// 	}
++
++// 	// We couldn't merge the fragments, so we need to add it as is
++
++// 	TRACE("    new fragment: %p, bytes %d-%d", buffer, start, end);
++
++// 	buffer->fragment.start = start;
++// 	buffer->fragment.end = end;
++// 	fFragments.Insert(next, buffer);
++
++// 	// update length of the hole, if any
++// 	fBytesLeft -= end - start;
++
++// 	if (lastFragment && !fReceivedLastFragment) {
++// 		fReceivedLastFragment = true;
++// 		fBytesLeft -= IP_MAXPACKET - end;
++// 	}
++
++// 	TRACE("    hole length: %d", (int)fBytesLeft);
++
++// 	return B_OK;
++// }
++
++
++// /*!	Reassembles the fragments to the specified buffer \a to.
++// 	This buffer must have been added via AddFragment() before.
++// */
++// status_t
++// FragmentPacket::Reassemble(net_buffer* to)
++// {
++// 	if (!IsComplete())
++// 		return B_ERROR;
++
++// 	net_buffer* buffer = NULL;
++
++// 	net_buffer* fragment;
++// 	while ((fragment = fFragments.RemoveHead()) != NULL) {
++// 		if (buffer != NULL) {
++// 			status_t status;
++// 			if (to == fragment) {
++// 				status = gBufferModule->merge(fragment, buffer, false);
++// 				buffer = fragment;
++// 			} else
++// 				status = gBufferModule->merge(buffer, fragment, true);
++// 			if (status != B_OK)
++// 				return status;
++// 		} else
++// 			buffer = fragment;
++// 	}
++
++// 	if (buffer != to)
++// 		panic("ipv6 packet reassembly did not work correctly.");
++
++// 	return B_OK;
++// }
++
++
++// int
++// FragmentPacket::Compare(void* _packet, const void* _key)
++// {
++// 	const ipv6_packet_key* key = (ipv6_packet_key*)_key;
++// 	ipv6_packet_key* packetKey = &((FragmentPacket*)_packet)->fKey;
++
++// 	if (packetKey->id == key->id
++// 		&& packetKey->source == key->source
++// 		&& packetKey->destination == key->destination
++// 		&& packetKey->protocol == key->protocol)
++// 		return 0;
++
++// 	return 1;
++// }
++
++
++// uint32
++// FragmentPacket::Hash(void* _packet, const void* _key, uint32 range)
++// {
++// 	const struct ipv6_packet_key* key = (struct ipv6_packet_key*)_key;
++// 	FragmentPacket* packet = (FragmentPacket*)_packet;
++// 	if (packet != NULL)
++// 		key = &packet->fKey;
++
++// 	return (key->source ^ key->destination ^ key->protocol ^ key->id) % range;
++// }
++
++
++// /*static*/ void
++// FragmentPacket::StaleTimer(struct net_timer* timer, void* data)
++// {
++// 	FragmentPacket* packet = (FragmentPacket*)data;
++// 	TRACE("Assembling FragmentPacket %p timed out!", packet);
++
++// 	MutexLocker locker(&sFragmentLock);
++
++// 	hash_remove(sFragmentHash, packet);
++// 	delete packet;
++// }
++
++
++//	#pragma mark -
++
++
++#if 0
++static void
++dump_ipv6_header(ipv6_header &header)
++{
++	dprintf("  version: %d\n", header.Version());
++	// TODO...
++}
++#endif
++
++
++// static int
++// dump_ipv6_multicast(int argc, char** argv)
++// {
++// 	MulticastState::Iterator it = sMulticastState->GetIterator();
++
++// 	while (it.HasNext()) {
++// 		Ipv6GroupInterface* state = it.Next();
++
++// 		char addressBuffer[64];
++
++// 		kprintf("%p: group <%s, %s, %s {", state, state->Interface()->name,
++// 			print_address(&state->Address(), addressBuffer,
++// 			sizeof(addressBuffer)),
++// 			state->Mode() == Ipv6GroupInterface::kExclude
++// 				? "Exclude" : "Include");
++
++// 		int count = 0;
++// 		Ipv6GroupInterface::AddressSet::Iterator it
++// 			= state->Sources().GetIterator();
++// 		while (it.HasNext()) {
++// 			kprintf("%s%s", count > 0 ? ", " : "", print_address(&it.Next(),
++// 				addressBuffer, sizeof(addressBuffer)));
++// 			count++;
++// 		}
++
++// 		kprintf("}> sock %p\n", state->Parent()->Socket());
++// 	}
++
++// 	return 0;
++// }
++
++
++/*!	Attempts to re-assemble fragmented packets.
++	\return B_OK if everything went well; if it could reassemble the packet, \a _buffer
++		will point to its buffer, otherwise, it will be \c NULL.
++	\return various error codes if something went wrong (mostly B_NO_MEMORY)
++*/
++// static status_t
++// reassemble_fragments(const ipv6_header &header, net_buffer** _buffer)
++// {
++// 	net_buffer* buffer = *_buffer;
++// 	status_t status;
++
++// 	struct ipv6_packet_key key;
++// 	key.source = (in_addr_t)header.source;
++// 	key.destination = (in_addr_t)header.destination;
++// 	key.id = header.id;
++// 	key.protocol = header.protocol;
++
++// 	// TODO: Make locking finer grained.
++// 	MutexLocker locker(&sFragmentLock);
++
++// 	FragmentPacket* packet = (FragmentPacket*)hash_lookup(sFragmentHash, &key);
++// 	if (packet == NULL) {
++// 		// New fragment packet
++// 		packet = new (std::nothrow) FragmentPacket(key);
++// 		if (packet == NULL)
++// 			return B_NO_MEMORY;
++
++// 		// add packet to hash
++// 		status = hash_insert(sFragmentHash, packet);
++// 		if (status != B_OK) {
++// 			delete packet;
++// 			return status;
++// 		}
++// 	}
++
++// 	uint16 fragmentOffset = header.FragmentOffset();
++// 	uint16 start = (fragmentOffset & IP_FRAGMENT_OFFSET_MASK) << 3;
++// 	uint16 end = start + header.TotalLength() - header.HeaderLength();
++// 	bool lastFragment = (fragmentOffset & IP_MORE_FRAGMENTS) == 0;
++
++// 	TRACE("   Received Ipv6 %sfragment of size %d, offset %d.",
++// 		lastFragment ? "last ": "", end - start, start);
++
++// 	// Remove header unless this is the first fragment
++// 	if (start != 0)
++// 		gBufferModule->remove_header(buffer, header.HeaderLength());
++
++// 	status = packet->AddFragment(start, end, buffer, lastFragment);
++// 	if (status != B_OK)
++// 		return status;
++
++// 	if (packet->IsComplete()) {
++// 		hash_remove(sFragmentHash, packet);
++// 			// no matter if reassembling succeeds, we won't need this packet
++// 			// anymore
++
++// 		status = packet->Reassemble(buffer);
++// 		delete packet;
++
++// 		// _buffer does not change
++// 		return status;
++// 	}
++
++// 	// This indicates that the packet is not yet complete
++// 	*_buffer = NULL;
++// 	return B_OK;
++// }
++
++
++/*!	Fragments the incoming buffer and send all fragments via the specified
++	\a route.
++*/
++// static status_t
++// send_fragments(ipv6_protocol* protocol, struct net_route* route,
++// 	net_buffer* buffer, uint32 mtu)
++// {
++// 	TRACE_SK(protocol, "SendFragments(%lu bytes, mtu %lu)", buffer->size, mtu);
++
++// 	NetBufferHeaderReader<ipv6_header> originalHeader(buffer);
++// 	if (originalHeader.Status() != B_OK)
++// 		return originalHeader.Status();
++
++// 	uint16 headerLength = originalHeader->HeaderLength();
++// 	uint32 bytesLeft = buffer->size - headerLength;
++// 	uint32 fragmentOffset = 0;
++// 	status_t status = B_OK;
++
++// 	net_buffer* headerBuffer = gBufferModule->split(buffer, headerLength);
++// 	if (headerBuffer == NULL)
++// 		return B_NO_MEMORY;
++
++// 	// TODO: we need to make sure ipv6_header is contiguous or
++// 	// use another construct.
++// 	NetBufferHeaderReader<ipv6_header> bufferHeader(headerBuffer);
++// 	ipv6_header* header = &bufferHeader.Data();
++
++// 	// Adapt MTU to be a multiple of 8 (fragment offsets can only be specified
++// 	// this way)
++// 	mtu -= headerLength;
++// 	mtu &= ~7;
++// 	TRACE("  adjusted MTU to %ld, bytesLeft %ld", mtu, bytesLeft);
++
++// 	while (bytesLeft > 0) {
++// 		uint32 fragmentLength = min_c(bytesLeft, mtu);
++// 		bytesLeft -= fragmentLength;
++// 		bool lastFragment = bytesLeft == 0;
++
++// 		header->total_length = htons(fragmentLength + headerLength);
++// 		header->fragment_offset = htons((lastFragment ? 0 : IP_MORE_FRAGMENTS)
++// 			| (fragmentOffset >> 3));
++// 		header->checksum = 0;
++// 		header->checksum = gStackModule->checksum((uint8*)header,
++// 			headerLength);
++// 			// TODO: compute the checksum only for those parts that changed?
++
++// 		TRACE("  send fragment of %ld bytes (%ld bytes left)", fragmentLength,
++// 			bytesLeft);
++
++// 		net_buffer* fragmentBuffer;
++// 		if (!lastFragment) {
++// 			fragmentBuffer = gBufferModule->split(buffer, fragmentLength);
++// 			fragmentOffset += fragmentLength;
++// 		} else
++// 			fragmentBuffer = buffer;
++
++// 		if (fragmentBuffer == NULL) {
++// 			status = B_NO_MEMORY;
++// 			break;
++// 		}
++
++// 		// copy header to fragment
++// 		status = gBufferModule->prepend(fragmentBuffer, header, headerLength);
++
++// 		// send fragment
++// 		if (status == B_OK)
++// 			status = sDatalinkModule->send_data(route, fragmentBuffer);
++
++// 		if (lastFragment) {
++// 			// we don't own the last buffer, so we don't have to free it
++// 			break;
++// 		}
++
++// 		if (status != B_OK) {
++// 			gBufferModule->free(fragmentBuffer);
++// 			break;
++// 		}
++// 	}
++
++// 	gBufferModule->free(headerBuffer);
++// 	return status;
++// }
++
++
++static status_t
++deliver_multicast(net_protocol_module_info* module, net_buffer* buffer,
++ 	bool deliverToRaw)
++{
++	if (module->deliver_data == NULL)
++		return B_OK;
++
++	// TODO...
++
++// 	MutexLocker _(sMulticastGroupsLock);
++
++// 	sockaddr_in* multicastAddr = (sockaddr_in*)buffer->destination;
++
++// 	MulticastState::ValueIterator it = sMulticastState->Lookup(std::make_pair(
++// 		&multicastAddr->sin_addr, buffer->interface->index));
++
++// 	while (it.HasNext()) {
++// 		Ipv6GroupInterface* state = it.Next();
++
++// 		if (deliverToRaw && state->Parent()->Socket()->raw == NULL)
++// 			continue;
++
++// 		if (state->FilterAccepts(buffer)) {
++// 			// as Multicast filters are installed with an Ipv6 protocol
++// 			// reference, we need to go and find the appropriate instance
++// 			// related to the 'receiving protocol' with module 'module'.
++// 			net_protocol* proto
++// 				= state->Parent()->Socket()->socket->first_protocol;
++
++// 			while (proto && proto->module != module)
++// 				proto = proto->next;
++
++// 			if (proto)
++// 				module->deliver_data(proto, buffer);
++// 		}
++// 	}
++
++	return B_OK;
++}
++
++
++static void
++raw_receive_data(net_buffer* buffer)
++{
++	MutexLocker locker(sRawSocketsLock);
++
++	if (sRawSockets.IsEmpty())
++		return;
++
++	TRACE("RawReceiveData(%i)", buffer->protocol);
++
++	if (buffer->flags & MSG_MCAST) {
++		// we need to call deliver_multicast here separately as
++		// buffer still has the IP header, and it won't in the
++		// next call. This isn't very optimized but works for now.
++		// A better solution would be to hold separate hash tables
++		// and lists for RAW and non-RAW sockets.
++		deliver_multicast(&gIPv6Module, buffer, true);
++	} else {
++		RawSocketList::Iterator iterator = sRawSockets.GetIterator();
++
++		while (iterator.HasNext()) {
++			RawSocket* raw = iterator.Next();
++
++			if (raw->Socket()->protocol == buffer->protocol)
++				raw->SocketEnqueue(buffer);
++		}
++	}
++}
++
++
++static inline sockaddr*
++fill_sockaddr_in6(sockaddr_in6* target, const in6_addr &address)
++{
++	target->sin6_family = AF_INET6;
++	target->sin6_len = sizeof(sockaddr_in6);
++	target->sin6_port = 0;
++	target->sin6_flowinfo = 0;
++	memcpy(target->sin6_addr.s6_addr, address.s6_addr, sizeof(in6_addr));
++	target->sin6_scope_id = 0;
++	return (sockaddr*)target;
++}
++
++
++// status_t
++// Ipv6Multicast::JoinGroup(Ipv6GroupInterface* state)
++// {
++// 	MutexLocker _(sMulticastGroupsLock);
++
++// 	sockaddr_in groupAddr;
++// 	net_interface* interface = state->Interface();
++
++// 	status_t status = interface->first_info->join_multicast(
++// 		interface->first_protocol,
++// 		fill_sockaddr_in(&groupAddr, state->Address().s_addr));
++// 	if (status != B_OK)
++// 		return status;
++
++// 	sMulticastState->Insert(state);
++// 	return B_OK;
++// }
++
++
++// status_t
++// Ipv6Multicast::LeaveGroup(Ipv6GroupInterface* state)
++// {
++// 	MutexLocker _(sMulticastGroupsLock);
++
++// 	sMulticastState->Remove(state);
++
++// 	sockaddr_in groupAddr;
++// 	net_interface* interface = state->Interface();
++
++// 	return interface->first_protocol->module->join_multicast(
++// 		interface->first_protocol,
++// 		fill_sockaddr_in(&groupAddr, state->Address().s_addr));
++// }
++
++
++static net_protocol_module_info*
++receiving_protocol(uint8 protocol)
++{
++	net_protocol_module_info* module = sReceivingProtocol[protocol];
++	if (module != NULL)
++		return module;
++
++	MutexLocker locker(sReceivingProtocolLock);
++
++	module = sReceivingProtocol[protocol];
++	if (module != NULL)
++		return module;
++
++	if (gStackModule->get_domain_receiving_protocol(sDomain, protocol,
++			&module) == B_OK)
++		sReceivingProtocol[protocol] = module;
++
++	return module;
++}
++
++
++// static status_t
++// ipv6_delta_group(Ipv6GroupInterface* group, int option,
++// 	net_interface* interface, const in_addr* sourceAddr)
++// {
++// 	switch (option) {
++// 		case IP_ADD_MEMBERSHIP:
++// 			return group->Add();
++// 		case IP_DROP_MEMBERSHIP:
++// 			return group->Drop();
++// 		case IP_BLOCK_SOURCE:
++// 			return group->BlockSource(*sourceAddr);
++// 		case IP_UNBLOCK_SOURCE:
++// 			return group->UnblockSource(*sourceAddr);
++// 		case IP_ADD_SOURCE_MEMBERSHIP:
++// 			return group->AddSSM(*sourceAddr);
++// 		case IP_DROP_SOURCE_MEMBERSHIP:
++// 			return group->DropSSM(*sourceAddr);
++// 	}
++
++// 	return B_ERROR;
++// }
++
++
++// static status_t
++// ipv6_delta_membership(ipv6_protocol* protocol, int option,
++// 	net_interface* interface, const in_addr* groupAddr,
++// 	const in_addr* sourceAddr)
++// {
++// 	Ipv6MulticastFilter &filter = protocol->multicast_filter;
++// 	Ipv6GroupInterface* state = NULL;
++// 	status_t status = B_OK;
++
++// 	switch (option) {
++// 		case IP_ADD_MEMBERSHIP:
++// 		case IP_ADD_SOURCE_MEMBERSHIP:
++// 			status = filter.GetState(*groupAddr, interface, state, true);
++// 			break;
++
++// 		case IP_DROP_MEMBERSHIP:
++// 		case IP_BLOCK_SOURCE:
++// 		case IP_UNBLOCK_SOURCE:
++// 		case IP_DROP_SOURCE_MEMBERSHIP:
++// 			filter.GetState(*groupAddr, interface, state, false);
++// 			if (state == NULL) {
++// 				if (option == IP_DROP_MEMBERSHIP
++// 					|| option == IP_DROP_SOURCE_MEMBERSHIP)
++// 					return EADDRNOTAVAIL;
++
++// 				return B_BAD_VALUE;
++// 			}
++// 			break;
++// 	}
++
++// 	if (status != B_OK)
++// 		return status;
++
++// 	status = ipv6_delta_group(state, option, interface, sourceAddr);
++// 	filter.ReturnState(state);
++// 	return status;
++// }
++
++
++// static int
++// generic_to_ipv6(int option)
++// {
++// 	switch (option) {
++// 		case MCAST_JOIN_GROUP:
++// 			return IP_ADD_MEMBERSHIP;
++// 		case MCAST_JOIN_SOURCE_GROUP:
++// 			return IP_ADD_SOURCE_MEMBERSHIP;
++// 		case MCAST_LEAVE_GROUP:
++// 			return IP_DROP_MEMBERSHIP;
++// 		case MCAST_BLOCK_SOURCE:
++// 			return IP_BLOCK_SOURCE;
++// 		case MCAST_UNBLOCK_SOURCE:
++// 			return IP_UNBLOCK_SOURCE;
++// 		case MCAST_LEAVE_SOURCE_GROUP:
++// 			return IP_DROP_SOURCE_MEMBERSHIP;
++// 	}
++
++// 	return -1;
++// }
++
++
++// static net_interface*
++// get_multicast_interface(ipv6_protocol* protocol, const in_addr* address)
++// {
++// 	sockaddr_in groupAddr;
++// 	net_route* route = sDatalinkModule->get_route(sDomain,
++// 		fill_sockaddr_in(&groupAddr, address ? address->s_addr : INADDR_ANY));
++// 	if (route == NULL)
++// 		return NULL;
++
++// 	return route->interface;
++// }
++
++
++// static status_t
++// ipv6_delta_membership(ipv6_protocol* protocol, int option,
++// 	in_addr* interfaceAddr, in_addr* groupAddr, in_addr* sourceAddr)
++// {
++// 	net_interface* interface = NULL;
++
++// 	if (interfaceAddr->s_addr == INADDR_ANY) {
++// 		interface = get_multicast_interface(protocol, groupAddr);
++// 	} else {
++// 		sockaddr_in address;
++// 		interface = sDatalinkModule->get_interface_with_address(sDomain,
++// 			fill_sockaddr_in(&address, interfaceAddr->s_addr));
++// 	}
++
++// 	if (interface == NULL)
++// 		return ENODEV;
++
++// 	return ipv6_delta_membership(protocol, option, interface,
++// 		groupAddr, sourceAddr);
++// }
++
++
++// static status_t
++// ipv6_generic_delta_membership(ipv6_protocol* protocol, int option,
++// 	uint32 index, const sockaddr_storage* _groupAddr,
++// 	const sockaddr_storage* _sourceAddr)
++// {
++// 	if (_groupAddr->ss_family != AF_INET)
++// 		return B_BAD_VALUE;
++
++// 	if (_sourceAddr && _sourceAddr->ss_family != AF_INET)
++// 		return B_BAD_VALUE;
++
++// 	const in_addr* groupAddr = &((const sockaddr_in*)_groupAddr)->sin_addr;
++
++// 	net_interface* interface;
++// 	if (index == 0)
++// 		interface = get_multicast_interface(protocol, groupAddr);
++// 	else
++// 		interface = sDatalinkModule->get_interface(sDomain, index);
++
++// 	if (interface == NULL)
++// 		return ENODEV;
++
++// 	const in_addr* sourceAddr = NULL;
++// 	if (_sourceAddr)
++// 		sourceAddr = &((const sockaddr_in*)_sourceAddr)->sin_addr;
++
++// 	return ipv6_delta_membership(protocol, generic_to_ipv6(option), interface,
++// 		groupAddr, sourceAddr);
++// }
++
++
++static status_t
++get_int_option(void* target, size_t length, int value)
++{
++	if (length != sizeof(int))
++		return B_BAD_VALUE;
++
++	return user_memcpy(target, &value, sizeof(int));
++}
++
++
++template<typename Type> static status_t
++set_int_option(Type &target, const void* _value, size_t length)
++{
++	int value;
++
++	if (length != sizeof(int))
++		return B_BAD_VALUE;
++
++	if (user_memcpy(&value, _value, sizeof(int)) != B_OK)
++		return B_BAD_ADDRESS;
++
++	target = value;
++	return B_OK;
++}
++
++
++//	#pragma mark -
++
++
++net_protocol*
++ipv6_init_protocol(net_socket* socket)
++{
++	ipv6_protocol* protocol = new (std::nothrow) ipv6_protocol();
++	if (protocol == NULL)
++		return NULL;
++
++	protocol->raw = NULL;
++	protocol->service_type = 0;
++	protocol->time_to_live = kDefaultTTL;
++	protocol->multicast_time_to_live = kDefaultMulticastTTL;
++	protocol->flags = 0;
++	protocol->interface_address = NULL;
++	return protocol;
++}
++
++
++status_t
++ipv6_uninit_protocol(net_protocol* _protocol)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++
++	delete protocol->raw;
++	delete protocol->interface_address;
++	delete protocol;
++	return B_OK;
++}
++
++
++/*!	Since open() is only called on the top level protocol, when we get here
++	it means we are on a SOCK_RAW socket.
++*/
++status_t
++ipv6_open(net_protocol* _protocol)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++
++	RawSocket* raw = new (std::nothrow) RawSocket(protocol->socket);
++	if (raw == NULL)
++		return B_NO_MEMORY;
++
++	status_t status = raw->InitCheck();
++	if (status != B_OK) {
++		delete raw;
++		return status;
++	}
++
++	TRACE_SK(protocol, "Open()");
++
++	protocol->raw = raw;
++
++	MutexLocker locker(sRawSocketsLock);
++	sRawSockets.Add(raw);
++	return B_OK;
++}
++
++
++status_t
++ipv6_close(net_protocol* _protocol)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++	RawSocket* raw = protocol->raw;
++	if (raw == NULL)
++		return B_ERROR;
++
++	TRACE_SK(protocol, "Close()");
++
++	MutexLocker locker(sRawSocketsLock);
++	sRawSockets.Remove(raw);
++	delete raw;
++	protocol->raw = NULL;
++
++	return B_OK;
++}
++
++
++status_t
++ipv6_free(net_protocol* protocol)
++{
++	return B_OK;
++}
++
++
++status_t
++ipv6_connect(net_protocol* protocol, const struct sockaddr* address)
++{
++	return B_ERROR;
++}
++
++
++status_t
++ipv6_accept(net_protocol* protocol, struct net_socket** _acceptedSocket)
++{
++	return EOPNOTSUPP;
++}
++
++
++status_t
++ipv6_control(net_protocol* _protocol, int level, int option, void* value,
++	size_t* _length)
++{
++//    dprintf("ipv6_control\n");
++	if ((level & LEVEL_MASK) != IPPROTO_IPV6)
++		return sDatalinkModule->control(sDomain, option, value, _length);
++
++	return B_BAD_VALUE;
++}
++
++
++status_t
++ipv6_getsockopt(net_protocol* _protocol, int level, int option, void* value,
++	int* _length)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++
++ 	if (level == IPPROTO_IPV6) {
++		// TODO
++		if (option == IPV6_MULTICAST_IF)
++			return EOPNOTSUPP;
++		if (option == IPV6_MULTICAST_HOPS)
++			return EOPNOTSUPP;
++		if (option == IPV6_MULTICAST_LOOP)
++			return EOPNOTSUPP;
++		if (option == IPV6_UNICAST_HOPS)
++			return get_int_option(value, *_length, protocol->time_to_live);
++		if (option == IPV6_JOIN_GROUP)
++			return EOPNOTSUPP;
++		if (option == IPV6_LEAVE_GROUP)
++			return EOPNOTSUPP;
++		if (option == IPV6_V6ONLY)
++			return EOPNOTSUPP;
++
++		dprintf("Ipv6::getsockopt(): get unknown option: %d\n", option);
++		return ENOPROTOOPT;
++	}
++
++	return sSocketModule->get_option(protocol->socket, level, option, value,
++		_length);
++}
++
++
++status_t
++ipv6_setsockopt(net_protocol* _protocol, int level, int option,
++	const void* value, int length)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++
++ 	if (level == IPPROTO_IPV6) {
++		// TODO
++		if (option == IPV6_MULTICAST_IF)
++			return EOPNOTSUPP;
++		if (option == IPV6_MULTICAST_HOPS)
++			return EOPNOTSUPP;
++		if (option == IPV6_MULTICAST_LOOP)
++			return EOPNOTSUPP;
++		if (option == IPV6_UNICAST_HOPS)
++			return set_int_option(protocol->time_to_live, value, length);
++		if (option == IPV6_JOIN_GROUP)
++			return EOPNOTSUPP;
++		if (option == IPV6_LEAVE_GROUP)
++			return EOPNOTSUPP;
++		if (option == IPV6_V6ONLY)
++			return EOPNOTSUPP;
++
++		dprintf("Ipv6::setsockopt(): set unknown option: %d\n", option);
++		return ENOPROTOOPT;
++	}
++
++
++	return sSocketModule->set_option(protocol->socket, level, option,
++		value, length);
++}
++
++
++status_t
++ipv6_bind(net_protocol* protocol, const sockaddr* _address)
++{
++	if (_address->sa_family != AF_INET6)
++		return EAFNOSUPPORT;
++
++	const sockaddr_in6* address = (const sockaddr_in6*)_address;
++
++	// only INADDR_ANY and addresses of local interfaces are accepted:
++	if (IN6_IS_ADDR_UNSPECIFIED(&address->sin6_addr)
++		|| IN6_IS_ADDR_MULTICAST(&address->sin6_addr)
++ 		|| sDatalinkModule->is_local_address(sDomain, _address, NULL, NULL)) {
++		memcpy(&protocol->socket->address, address, sizeof(sockaddr_in6));
++		protocol->socket->address.ss_len = sizeof(sockaddr_in6);
++			// explicitly set length, as our callers can't be trusted to
++			// always provide the correct length!
++		return B_OK;
++	}
++
++	return B_ERROR;
++		// address is unknown on this host
++}
++
++
++status_t
++ipv6_unbind(net_protocol* protocol, struct sockaddr* address)
++{
++	// nothing to do here
++	return B_OK;
++}
++
++
++status_t
++ipv6_listen(net_protocol* protocol, int count)
++{
++	return EOPNOTSUPP;
++}
++
++
++status_t
++ipv6_shutdown(net_protocol* protocol, int direction)
++{
++	return EOPNOTSUPP;
++}
++
++
++static uint8
++ip6_select_hoplimit(net_protocol* _protocol, net_buffer* buffer)
++{
++// TODO: the precedence should be as follows:
++// 1. Hoplimit value specified via ioctl.
++// 2. (If the outgoing interface is detected) the current
++//     hop limit of the interface specified by router advertisement.
++// 3. The system default hoplimit.
++//
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++	const bool isMulticast = buffer->flags & MSG_MCAST;
++	if (protocol) {
++		return isMulticast ? protocol->multicast_time_to_live
++			: protocol->time_to_live;
++ 	}
++	return isMulticast ? kDefaultMulticastTTL : kDefaultTTL;
++}
++
++
++status_t
++ipv6_send_routed_data(net_protocol* _protocol, struct net_route* route,
++	net_buffer* buffer)
++{
++	if (route == NULL)
++		return B_BAD_VALUE;
++
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++	net_interface* interface = route->interface;
++
++	TRACE_SK(protocol, "SendRoutedData(%p, %p [%ld bytes])", route, buffer,
++		buffer->size);
++
++	sockaddr_in6& source = *(sockaddr_in6*)buffer->source;
++	sockaddr_in6& destination = *(sockaddr_in6*)buffer->destination;
++//	sockaddr_in6& broadcastAddress = *(sockaddr_in6*)interface->destination;
++
++//	bool headerIncluded = false, checksumNeeded = true;
++//	if (protocol != NULL)
++//		headerIncluded = (protocol->flags & IP_FLAG_HEADER_INCLUDED) != 0;
++
++	buffer->flags &= ~(MSG_BCAST | MSG_MCAST);
++
++	if (IN6_IS_ADDR_UNSPECIFIED(&destination.sin6_addr))
++		return EDESTADDRREQ;
++
++
++// 	if ((interface->device->flags & IFF_BROADCAST) != 0
++// 		&& (destination.sin6_addr.s_addr == INADDR_BROADCAST
++// 			|| destination.sin_addr.s_addr
++// 				== broadcastAddress.sin_addr.s_addr)) {
++// 		if (protocol && !(protocol->socket->options & SO_BROADCAST))
++// 			return B_BAD_VALUE;
++// 		buffer->flags |= MSG_BCAST;
++// 	} else if (IN_MULTICAST(ntohl(destination.sin_addr.s_addr)))
++// 		buffer->flags |= MSG_MCAST;
++
++	if (IN6_IS_ADDR_MULTICAST(&destination.sin6_addr))
++ 		buffer->flags |= MSG_MCAST;
++
++	// Add IPv6 header
++
++	NetBufferPrepend<ip6_hdr> header(buffer);
++	if (header.Status() != B_OK)
++		return header.Status();
++
++	if (buffer->size > 0xffff)
++		return EMSGSIZE;
++
++	uint32 flowinfo = 0; // TODO: fill in the flow id from somewhere
++	if (protocol) {
++		// fill in traffic class
++		flowinfo |= htonl(protocol->service_type << 20);
++	}
++	// set lower 28 bits
++	header->ip6_flow = htonl(flowinfo) & IPV6_FLOWINFO_MASK;
++	// set upper 4 bits
++	header->ip6_vfc |= IPV6_VERSION;
++	header->ip6_plen = htons(buffer->size);
++	header->ip6_nxt = protocol ? protocol->socket->protocol : buffer->protocol;
++	header->ip6_hlim = ip6_select_hoplimit(protocol, buffer);
++	memcpy(&header->ip6_src, &source.sin6_addr, sizeof(in6_addr));
++	memcpy(&header->ip6_dst, &destination.sin6_addr, sizeof(in6_addr));
++
++// 	if (checksumNeeded) {
++// 		*IPChecksumField(buffer) = gBufferModule->checksum(buffer, 0,
++// 			sizeof(ipv6_header), true);
++// 	}
++
++// 	TRACE_SK(protocol, "  SendRoutedData(): header chksum: %ld, buffer "
++// 		"checksum: %ld",
++// 		gBufferModule->checksum(buffer, 0, sizeof(ipv6_header), true),
++// 		gBufferModule->checksum(buffer, 0, buffer->size, true));
++	
++	char addrbuf[INET6_ADDRSTRLEN];
++	TRACE_SK(protocol, "  SendRoutedData(): destination: %s",
++		ip6_sprintf(&destination.sin6_addr, addrbuf));
++
++	uint32 mtu = route->mtu ? route->mtu : interface->mtu;
++	if (buffer->size > mtu) {
++		// we need to fragment the packet
++		return EMSGSIZE; // TODO
++		//return send_fragments(protocol, route, buffer, mtu);
++	}
++
++	return sDatalinkModule->send_data(route, buffer);
++}
++
++
++status_t
++ipv6_send_data(net_protocol* _protocol, net_buffer* buffer)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++
++	TRACE_SK(protocol, "SendData(%p [%ld bytes])", buffer, buffer->size);
++
++// this code probably is not needed, because there is no hdrincl for IPv6
++//
++// 	if (protocol && (protocol->flags & IP_FLAG_HEADER_INCLUDED)) {
++// 		if (buffer->size < sizeof(ip6_hdr))
++// 			return B_BAD_VALUE;
++
++// 		sockaddr_in6* source = (sockaddr_in6*)buffer->source;
++// 		sockaddr_in6* destination = (sockaddr_in6*)buffer->destination;
++
++// 		fill_sockaddr_in6(source, *NetBufferField<in6_addr,
++// 			offsetof(ip6_hdr, ip6_src)>(buffer));
++// 		fill_sockaddr_in6(destination, *NetBufferField<in6_addr,
++// 			offsetof(ip6_hdr, ip6_dst)>(buffer));
++// 	}
++
++	sockaddr_in6* destination = (sockaddr_in6*)buffer->destination;
++
++	// handle IP_MULTICAST_IF
++	if (IN6_IS_ADDR_MULTICAST(&destination->sin6_addr)
++			&& protocol->interface_address != NULL) {
++		net_interface* interface
++			= sDatalinkModule->get_interface_with_address(sDomain,
++				protocol->interface_address);
++		if (interface == NULL || (interface->flags & IFF_UP) == 0)
++			return EADDRNOTAVAIL;
++
++		buffer->interface = interface;
++
++		net_route* route = sDatalinkModule->get_route(sDomain,
++			interface->address);
++		if (route == NULL)
++			return ENETUNREACH;
++
++		return sDatalinkModule->send_data(route, buffer);
++	}
++
++	return sDatalinkModule->send_datagram(protocol, sDomain, buffer);
++}
++
++
++ssize_t
++ipv6_send_avail(net_protocol* protocol)
++{
++	return B_ERROR;
++}
++
++
++status_t
++ipv6_read_data(net_protocol* _protocol, size_t numBytes, uint32 flags,
++	net_buffer** _buffer)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++	RawSocket* raw = protocol->raw;
++	if (raw == NULL)
++		return B_ERROR;
++
++	TRACE_SK(protocol, "ReadData(%lu, 0x%lx)", numBytes, flags);
++
++	return raw->SocketDequeue(flags, _buffer);
++}
++
++
++ssize_t
++ipv6_read_avail(net_protocol* _protocol)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++	RawSocket* raw = protocol->raw;
++	if (raw == NULL)
++		return B_ERROR;
++
++	return raw->AvailableData();
++}
++
++
++struct net_domain*
++ipv6_get_domain(net_protocol* protocol)
++{
++	return sDomain;
++}
++
++
++size_t
++ipv6_get_mtu(net_protocol* protocol, const struct sockaddr* address)
++{
++	net_route* route = sDatalinkModule->get_route(sDomain, address);
++	if (route == NULL)
++		return 0;
++
++	size_t mtu;
++	if (route->mtu != 0)
++		mtu = route->mtu;
++	else
++		mtu = route->interface->mtu;
++
++	sDatalinkModule->put_route(sDomain, route);
++	// TODO: what about ext headers?
++	// this functin probably shoud be changed in calling places, not here
++	return mtu - sizeof(ip6_hdr);
++}
++
++
++status_t
++ipv6_receive_data(net_buffer* buffer)
++{
++	TRACE("ReceiveData(%p [%ld bytes])", buffer, buffer->size);
++
++	NetBufferHeaderReader<IPv6Header> bufferHeader(buffer);
++	if (bufferHeader.Status() != B_OK)
++		return bufferHeader.Status();
++
++	IPv6Header &header = bufferHeader.Data();
++	//dump_ipv6_header(header);
++
++	if (header.ProtocolVersion() != IPV6_VERSION)
++		return B_BAD_TYPE;
++
++	uint16 packetLength = header.TotalLength();
++	uint16 headerLength = header.HeaderLength();
++	if (packetLength > buffer->size
++		|| headerLength < sizeof(ip6_hdr))
++		return B_BAD_DATA;
++
++// there is no checksum in ipv6 header
++	// TODO: would be nice to have a direct checksum function somewhere
++//	if (gBufferModule->checksum(buffer, 0, headerLength, true) != 0)
++//		return B_BAD_DATA;
++
++	// lower layers notion of Broadcast or Multicast have no relevance to us
++	buffer->flags &= ~(MSG_BCAST | MSG_MCAST);
++
++	sockaddr_in6 destination;
++	fill_sockaddr_in6(&destination, header.Dst());
++
++	if (IN6_IS_ADDR_MULTICAST(&destination.sin6_addr)) {
++		buffer->flags |= MSG_MCAST;
++	} else {
++		// test if the packet is really for us
++		if (!sDatalinkModule->is_local_address(sDomain, (sockaddr*)&destination,
++				&buffer->interface, NULL)
++			&& !sDatalinkModule->is_local_link_address(sDomain, true,
++				buffer->destination, &buffer->interface)) {
++			char ip6bufs[INET6_ADDRSTRLEN];
++			char ip6bufd[INET6_ADDRSTRLEN];
++			TRACE("  ReceiveData(): packet was not for us %s -> %s",
++				ip6_sprintf(&header.Src(), ip6bufs),
++				ip6_sprintf(&header.Dst(), ip6bufd));
++			return B_ERROR;
++		}
++	}
++
++	// set net_buffer's source/destination address
++	fill_sockaddr_in6((struct sockaddr_in6*)buffer->source, header.Src());
++	memcpy(buffer->destination, &destination, sizeof(sockaddr_in6));
++
++	uint8 protocol = buffer->protocol = header.Protocol();
++
++	// remove any trailing/padding data
++	status_t status = gBufferModule->trim(buffer, packetLength);
++	if (status != B_OK)
++		return status;
++
++	// check for fragmentation
++// 	uint16 fragmentOffset = ntohs(header.fragment_offset);
++// 	if ((fragmentOffset & IP_MORE_FRAGMENTS) != 0
++// 		|| (fragmentOffset & IP_FRAGMENT_OFFSET_MASK) != 0) {
++// 		// this is a fragment
++// 		TRACE("  ReceiveData(): Found a Fragment!");
++// 		status = reassemble_fragments(header, &buffer);
++// 		TRACE("  ReceiveData():  -> %s", strerror(status));
++// 		if (status != B_OK)
++// 			return status;
++
++// 		if (buffer == NULL) {
++// 			// buffer was put into fragment packet
++// 			TRACE("  ReceiveData(): Not yet assembled.");
++// 			return B_OK;
++// 		}
++// 	}
++
++	// Since the buffer might have been changed (reassembled fragment)
++	// we must no longer access bufferHeader or header anymore after
++	// this point
++
++	raw_receive_data(buffer);
++
++	gBufferModule->remove_header(buffer, headerLength);
++		// the header is of variable size and may include IP options
++		// (that we ignore for now)
++
++	net_protocol_module_info* module = receiving_protocol(protocol);
++	if (module == NULL) {
++		// no handler for this packet
++		return EAFNOSUPPORT;
++	}
++
++	if ((buffer->flags & MSG_MCAST) != 0) {
++		// Unfortunely historical reasons dictate that the IP multicast
++		// model be a little different from the unicast one. We deliver
++		// this frame directly to all sockets registered with interest
++		// for this multicast group.
++		return deliver_multicast(module, buffer, false);
++	}
++
++	return module->receive_data(buffer);
++}
++
++
++status_t
++ipv6_deliver_data(net_protocol* _protocol, net_buffer* buffer)
++{
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
++
++	if (protocol->raw == NULL)
++		return B_ERROR;
++
++	return protocol->raw->SocketEnqueue(buffer);
++}
++
++
++status_t
++ipv6_error(uint32 code, net_buffer* data)
++{
++	return B_ERROR;
++}
++
++
++status_t
++ipv6_error_reply(net_protocol* protocol, net_buffer* causedError, uint32 code,
++	void* errorData)
++{
++	return B_ERROR;
++}
++
++
++ssize_t
++ipv6_process_ancillary_data_no_container(net_protocol* protocol,
++	net_buffer* buffer, void* msgControl, size_t msgControlLen)
++{
++	ssize_t bytesWritten = 0;
++
++	// TODO: probably should handle IPV6_RECVPKTINFO and others
++
++	return bytesWritten;
++}
++
++
++//	#pragma mark -
++
++
++status_t
++init_ipv6()
++{
++//	sPacketID = (int32)system_time();
++
++	mutex_init(&sRawSocketsLock, "raw sockets");
++//	mutex_init(&sFragmentLock, "IPv6 Fragments");
++//	mutex_init(&sMulticastGroupsLock, "IPv6 multicast groups");
++	mutex_init(&sReceivingProtocolLock, "IPv6 receiving protocols");
++
++	status_t status;
++
++// 	sMulticastState = new MulticastState();
++// 	if (sMulticastState == NULL) {
++// 		status = B_NO_MEMORY;
++// 		goto err4;
++// 	}
++
++// 	status = sMulticastState->Init();
++// 	if (status != B_OK)
++// 		goto err5;
++
++// 	sFragmentHash = hash_init(MAX_HASH_FRAGMENTS, FragmentPacket::NextOffset(),
++// 		&FragmentPacket::Compare, &FragmentPacket::Hash);
++// 	if (sFragmentHash == NULL)
++// 		goto err5;
++
++	new (&sRawSockets) RawSocketList;
++		// static initializers do not work in the kernel,
++		// so we have to do it here, manually
++		// TODO: for modules, this shouldn't be required
++
++	status = gStackModule->register_domain_protocols(AF_INET6, SOCK_RAW, 0,
++		"network/protocols/ipv6/v1", NULL);
++	if (status != B_OK)
++		goto err6;
++
++	status = gStackModule->register_domain(AF_INET6, "internet6", &gIPv6Module,
++		&gIPv6AddressModule, &sDomain);
++	if (status != B_OK)
++		goto err6;
++
++//	add_debugger_command("ipv6_multicast", dump_ipv6_multicast,
++//		"list all current Ipv6 multicast states");
++
++	dprintf("init_ipv6: OK\n");
++	return B_OK;
++
++err6:
++//	hash_uninit(sFragmentHash);
++//err5:
++//	delete sMulticastState;
++//err4:
++	mutex_destroy(&sReceivingProtocolLock);
++//	mutex_destroy(&sMulticastGroupsLock);
++//	mutex_destroy(&sFragmentLock);
++	mutex_destroy(&sRawSocketsLock);
++	dprintf("init_ipv6: error, status=%u\n", status);
++	return status;
++}
++
++
++status_t
++uninit_ipv6()
++{
++	mutex_lock(&sReceivingProtocolLock);
++
++//	remove_debugger_command("ipv6_multicast", dump_ipv6_multicast);
++
++	// put all the domain receiving protocols we gathered so far
++	for (uint32 i = 0; i < 256; i++) {
++		if (sReceivingProtocol[i] != NULL)
++			gStackModule->put_domain_receiving_protocol(sDomain, i);
++	}
++
++	gStackModule->unregister_domain(sDomain);
++	mutex_unlock(&sReceivingProtocolLock);
++
++// 	delete sMulticastState;
++// 	hash_uninit(sFragmentHash);
++
++// 	mutex_destroy(&sMulticastGroupsLock);
++// 	mutex_destroy(&sFragmentLock);
++	mutex_destroy(&sRawSocketsLock);
++	mutex_destroy(&sReceivingProtocolLock);
++
++	return B_OK;
++}
++
++
++static status_t
++ipv6_std_ops(int32 op, ...)
++{
++	switch (op) {
++		case B_MODULE_INIT:
++			return init_ipv6();
++		case B_MODULE_UNINIT:
++			return uninit_ipv6();
++
++		default:
++			return B_ERROR;
++	}
++}
++
++
++net_protocol_module_info gIPv6Module = {
++	{
++		"network/protocols/ipv6/v1",
++		0,
++		ipv6_std_ops
++	},
++	NET_PROTOCOL_ATOMIC_MESSAGES,
++
++	ipv6_init_protocol,
++	ipv6_uninit_protocol,
++	ipv6_open,
++	ipv6_close,
++	ipv6_free,
++	ipv6_connect,
++	ipv6_accept,
++	ipv6_control,
++	ipv6_getsockopt,
++	ipv6_setsockopt,
++	ipv6_bind,
++	ipv6_unbind,
++	ipv6_listen,
++	ipv6_shutdown,
++	ipv6_send_data,
++	ipv6_send_routed_data,
++	ipv6_send_avail,
++	ipv6_read_data,
++	ipv6_read_avail,
++	ipv6_get_domain,
++	ipv6_get_mtu,
++	ipv6_receive_data,
++	ipv6_deliver_data,
++	ipv6_error,
++	ipv6_error_reply,
++	NULL,		// add_ancillary_data()
++	NULL,		// process_ancillary_data()
++	ipv6_process_ancillary_data_no_container,
++	NULL,		// send_data_no_buffer()
++	NULL		// read_data_no_buffer()
++};
++
++module_dependency module_dependencies[] = {
++	{NET_STACK_MODULE_NAME, (module_info**)&gStackModule},
++	{NET_BUFFER_MODULE_NAME, (module_info**)&gBufferModule},
++	{NET_DATALINK_MODULE_NAME, (module_info**)&sDatalinkModule},
++	{NET_SOCKET_MODULE_NAME, (module_info**)&sSocketModule},
++	{}
++};
++
++module_info* modules[] = {
++	(module_info*)&gIPv6Module,
++	NULL
++};
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6_utils.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6_utils.cpp	(revision 0)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6_utils.cpp	(revision 0)
+@@ -0,0 +1,143 @@
++/*
++ * Copyright 2010, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ */
++/*
++ * Copyright (c) 2004 by Internet Systems Consortium, Inc. ("ISC")
++ * Copyright (c) 1996-1999 by Internet Software Consortium.
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS.  IN NO EVENT SHALL ISC BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
++ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++#include <net_datalink.h>
++
++#include <ByteOrder.h>
++#include <KernelExport.h>
++
++#include <NetUtilities.h>
++
++#include <memory.h>
++
++//#include <netinet/ip6.h>
++#include <netinet6/in6.h>
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++//#include <stdint.h>
++
++#include "ipv6_address.h"
++
++// REVIEW: This is inet_ntop6 function is copypasted from libbind
++
++#define NS_IN6ADDRSZ 16
++#define NS_INT16SZ 2
++
++#define SPRINTF(x) ((size_t)sprintf x)
++
++/*!	Convert IPv6 binary address into presentation (printable) format.
++	Author: Paul Vixie, 1996.
++	\return pointer to dst string if address as been printed
++	\return NULL if the buffer is too short
++*/
++const char *
++ip6_sprintf(const in6_addr *srcaddr, char *dst, size_t size)
++{
++	/*
++	 * Note that int32_t and int16_t need only be "at least" large enough
++	 * to contain a value of the specified size.  On some systems, like
++	 * Crays, there is no such thing as an integer variable with 16 bits.
++	 * Keep this in mind if you think this function should have been coded
++	 * to use pointer overlays.  All the world's not a VAX.
++	 */
++	char tmp[INET6_ADDRSTRLEN], *tp;
++	struct { int base, len; } best, cur;
++	uint16 words[NS_IN6ADDRSZ / NS_INT16SZ];
++	int i;
++	const uint8 *src = srcaddr->s6_addr;
++
++	/*
++	 * Preprocess:
++	 *	Copy the input (bytewise) array into a wordwise array.
++	 *	Find the longest run of 0x00's in src[] for :: shorthanding.
++	 */
++	memset(words, '\0', sizeof words);
++	for (i = 0; i < NS_IN6ADDRSZ; i++)
++		words[i / 2] |= (src[i] << ((1 - (i % 2)) << 3));
++	best.base = -1;
++	best.len = 0;
++	cur.base = -1;
++	cur.len = 0;
++	for (i = 0; i < (NS_IN6ADDRSZ / NS_INT16SZ); i++) {
++		if (words[i] == 0) {
++			if (cur.base == -1)
++				cur.base = i, cur.len = 1;
++			else
++				cur.len++;
++		} else {
++			if (cur.base != -1) {
++				if (best.base == -1 || cur.len > best.len)
++					best = cur;
++				cur.base = -1;
++			}
++		}
++	}
++	if (cur.base != -1) {
++		if (best.base == -1 || cur.len > best.len)
++			best = cur;
++	}
++	if (best.base != -1 && best.len < 2)
++		best.base = -1;
++
++	/*
++	 * Format the result.
++	 */
++	tp = tmp;
++	for (i = 0; i < (NS_IN6ADDRSZ / NS_INT16SZ); i++) {
++		/* Are we inside the best run of 0x00's? */
++		if (best.base != -1 && i >= best.base &&
++		    i < (best.base + best.len)) {
++			if (i == best.base)
++				*tp++ = ':';
++			continue;
++		}
++		/* Are we following an initial run of 0x00s or any real hex? */
++		if (i != 0)
++			*tp++ = ':';
++		/* Is this address an encapsulated IPv4? */
++// TODO?: this probably is not so necessary in kernel
++// 		if (i == 6 && best.base == 0 && (best.len == 6 ||
++// 		    (best.len == 7 && words[7] != 0x0001) ||
++// 		    (best.len == 5 && words[5] == 0xffff))) {
++// 			if (!inet_ntop4(src+12, tp, sizeof tmp - (tp - tmp)))
++// 				return (NULL);
++// 			tp += strlen(tp);
++// 			break;
++// 		}
++		tp += SPRINTF((tp, "%x", words[i]));
++	}
++	/* Was it a trailing run of 0x00's? */
++	if (best.base != -1 && (best.base + best.len) ==
++	    (NS_IN6ADDRSZ / NS_INT16SZ))
++		*tp++ = ':';
++	*tp++ = '\0';
++
++	/*
++	 * Check for overflow, copy, and we're done.
++	 */
++	if ((size_t)(tp - tmp) > size)
++		return NULL;
++
++	strcpy(dst, tmp);
++	return dst;
++}
+Index: src/add-ons/kernel/network/protocols/ipv6/Jamfile
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/Jamfile	(revision 0)
++++ src/add-ons/kernel/network/protocols/ipv6/Jamfile	(revision 0)
+@@ -0,0 +1,28 @@
++SubDir HAIKU_TOP src add-ons kernel network protocols ipv6 ;
++
++SetSubDirSupportedPlatformsBeOSCompatible ;
++
++if $(TARGET_PLATFORM) != haiku {
++	UseHeaders [ FStandardOSHeaders ] : true ;
++		# Needed for <support/Errors.h> and maybe other stuff.
++	UseHeaders [ FDirName $(HAIKU_TOP) headers posix ] : true ;
++		# We need the public network headers also when not compiling for Haiku.
++		# Unfortunately we get more than we want, namely all POSIX headers.
++}
++
++UsePrivateKernelHeaders ;
++UsePrivateHeaders net ;
++
++KernelAddon ipv6 :
++	ipv6.cpp
++	ipv6_address.cpp
++	ipv6_utils.cpp
++;
++
++# Installation
++HaikuInstall install-networking : /boot/home/config/add-ons/kernel/haiku_network/protocols
++	: ipv6 ;
++
++Package haiku-networkingkit-cvs :
++	haiku :
++	boot home config add-ons kernel haiku_network protocols ;
+Index: src/add-ons/kernel/network/protocols/ipv6/jenkins.h
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/jenkins.h	(revision 0)
++++ src/add-ons/kernel/network/protocols/ipv6/jenkins.h	(revision 0)
+@@ -0,0 +1,187 @@
++/*
++ * Copyright 2010, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Taken from http://burtleburtle.net/bob/c/lookup3.c
++ */
++
++#ifndef LIBKERN_JENKINS_H
++#define LIBKERN_JENKINS_H
++
++/*
++-------------------------------------------------------------------------------
++  lookup3.c, by Bob Jenkins, May 2006, Public Domain.
++
++  These are functions for producing 32-bit hashes for hash table lookup.
++  hashword(), hashlittle(), hashlittle2(), hashbig(), mix(), and final()
++  are externally useful functions.  Routines to test the hash are included
++  if SELF_TEST is defined.  You can use this free for any purpose.  It's in
++  the public domain.  It has no warranty.
++
++  You probably want to use hashlittle().  hashlittle() and hashbig()
++  hash byte arrays.  hashlittle() is is faster than hashbig() on
++  little-endian machines.  Intel and AMD are little-endian machines.
++  On second thought, you probably want hashlittle2(), which is identical to
++  hashlittle() except it returns two 32-bit hashes for the price of one.
++  You could implement hashbig2() if you wanted but I haven't bothered here.
++
++  If you want to find a hash of, say, exactly 7 integers, do
++    a = i1;  b = i2;  c = i3;
++    mix(a,b,c);
++    a += i4; b += i5; c += i6;
++    mix(a,b,c);
++    a += i7;
++    final(a,b,c);
++  then use c as the hash value.  If you have a variable length array of
++  4-byte integers to hash, use hashword().  If you have a byte array (like
++  a character string), use hashlittle().  If you have several byte arrays, or
++  a mix of things, see the comments above hashlittle().
++  
++  Why is this so big?  I read 12 bytes at a time into 3 4-byte integers,
++  then mix those integers.  This is fast (you can do a lot more thorough
++  mixing with 12*3 instructions on 3 integers than you can with 3 instructions
++  on 1 byte), but shoehorning those bytes into integers efficiently is messy.
++-------------------------------------------------------------------------------
++*/
++
++#define rot(x,k) (((x)<<(k)) | ((x)>>(32-(k))))
++
++/*
++-------------------------------------------------------------------------------
++mix -- mix 3 32-bit values reversibly.
++
++This is reversible, so any information in (a,b,c) before mix() is
++still in (a,b,c) after mix().
++
++If four pairs of (a,b,c) inputs are run through mix(), or through
++mix() in reverse, there are at least 32 bits of the output that
++are sometimes the same for one pair and different for another pair.
++This was tested for:
++* pairs that differed by one bit, by two bits, in any combination
++  of top bits of (a,b,c), or in any combination of bottom bits of
++  (a,b,c).
++* "differ" is defined as +, -, ^, or ~^.  For + and -, I transformed
++  the output delta to a Gray code (a^(a>>1)) so a string of 1's (as
++  is commonly produced by subtraction) look like a single 1-bit
++  difference.
++* the base values were pseudorandom, all zero but one bit set, or 
++  all zero plus a counter that starts at zero.
++
++Some k values for my "a-=c; a^=rot(c,k); c+=b;" arrangement that
++satisfy this are
++    4  6  8 16 19  4
++    9 15  3 18 27 15
++   14  9  3  7 17  3
++Well, "9 15 3 18 27 15" didn't quite get 32 bits diffing
++for "differ" defined as + with a one-bit base and a two-bit delta.  I
++used http://burtleburtle.net/bob/hash/avalanche.html to choose 
++the operations, constants, and arrangements of the variables.
++
++This does not achieve avalanche.  There are input bits of (a,b,c)
++that fail to affect some output bits of (a,b,c), especially of a.  The
++most thoroughly mixed value is c, but it doesn't really even achieve
++avalanche in c.
++
++This allows some parallelism.  Read-after-writes are good at doubling
++the number of bits affected, so the goal of mixing pulls in the opposite
++direction as the goal of parallelism.  I did what I could.  Rotates
++seem to cost as much as shifts on every machine I could lay my hands
++on, and rotates are much kinder to the top and bottom bits, so I used
++rotates.
++-------------------------------------------------------------------------------
++*/
++#define mix(a,b,c) \
++{ \
++  a -= c;  a ^= rot(c, 4);  c += b; \
++  b -= a;  b ^= rot(a, 6);  a += c; \
++  c -= b;  c ^= rot(b, 8);  b += a; \
++  a -= c;  a ^= rot(c,16);  c += b; \
++  b -= a;  b ^= rot(a,19);  a += c; \
++  c -= b;  c ^= rot(b, 4);  b += a; \
++}
++
++/*
++-------------------------------------------------------------------------------
++final -- final mixing of 3 32-bit values (a,b,c) into c
++
++Pairs of (a,b,c) values differing in only a few bits will usually
++produce values of c that look totally different.  This was tested for
++* pairs that differed by one bit, by two bits, in any combination
++  of top bits of (a,b,c), or in any combination of bottom bits of
++  (a,b,c).
++* "differ" is defined as +, -, ^, or ~^.  For + and -, I transformed
++  the output delta to a Gray code (a^(a>>1)) so a string of 1's (as
++  is commonly produced by subtraction) look like a single 1-bit
++  difference.
++* the base values were pseudorandom, all zero but one bit set, or 
++  all zero plus a counter that starts at zero.
++
++These constants passed:
++ 14 11 25 16 4 14 24
++ 12 14 25 16 4 14 24
++and these came close:
++  4  8 15 26 3 22 24
++ 10  8 15 26 3 22 24
++ 11  8 15 26 3 22 24
++-------------------------------------------------------------------------------
++*/
++#define final(a,b,c) \
++{ \
++  c ^= b; c -= rot(b,14); \
++  a ^= c; a -= rot(c,11); \
++  b ^= a; b -= rot(a,25); \
++  c ^= b; c -= rot(b,16); \
++  a ^= c; a -= rot(c,4);  \
++  b ^= a; b -= rot(a,14); \
++  c ^= b; c -= rot(b,24); \
++}
++
++/*
++--------------------------------------------------------------------
++ This works on all machines.  To be useful, it requires
++ -- that the key be an array of uint32's, and
++ -- that the length be the number of uint32's in the key
++
++ The function hashword() is identical to hashlittle() on little-endian
++ machines, and identical to hashbig() on big-endian machines,
++ except that the length has to be measured in uint32s rather than in
++ bytes.  hashlittle() is more complicated than hashword() only because
++ hashlittle() has to dance around fitting the key bytes into registers.
++--------------------------------------------------------------------
++*/
++static uint32
++jenkins_hashword(const uint32 *k,  /* the key, an array of uint32 values */
++				 size_t length,      /* the length of the key, in uint32s */
++				 uint32 initval)    /* the previous hash, or an arbitrary value */
++{
++  uint32 a,b,c;
++
++  /* Set up the internal state */
++  a = b = c = 0xdeadbeef + (((uint32)length)<<2) + initval;
++
++  /*------------------------------------------------- handle most of the key */
++  while (length > 3)
++  {
++    a += k[0];
++    b += k[1];
++    c += k[2];
++    mix(a,b,c);
++    length -= 3;
++    k += 3;
++  }
++
++  /*------------------------------------------- handle the last 3 uint32's */
++  switch(length)                     /* all the case statements fall through */
++  { 
++  case 3 : c+=k[2];
++  case 2 : b+=k[1];
++  case 1 : a+=k[0];
++    final(a,b,c);
++  case 0:     /* case 0: nothing left to add */
++    break;
++  }
++  /*------------------------------------------------------ report the result */
++  return c;
++}
++
++#endif 
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp	(revision 0)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp	(revision 0)
+@@ -0,0 +1,585 @@
++/*
++ * Copyright 2010, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Based on code from ipv4_address.cpp
++ */
++
++
++#include <net_datalink.h>
++
++#include <NetUtilities.h>
++
++#include <memory.h>
++#include <netinet6/in6.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "ipv6_address.h"
++#include "jenkins.h"
++
++
++const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
++const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
++
++
++static void
++ipv6_mask_adress_inplace(sockaddr *address, const sockaddr *mask)
++{
++	in6_addr &i6addr = ((sockaddr_in6 *)address)->sin6_addr;
++	const in6_addr &i6mask = ((const sockaddr_in6 *)mask)->sin6_addr;
++
++	for (uint32 i = 0; i < sizeof(in6_addr) && i6mask.s6_addr[i]; i++)
++	i6addr.s6_addr[i] &= i6mask.s6_addr[i];
++}
++
++
++/*!	Routing utility function: copies address \a from into a new address
++	that is put into \a to.
++	If \a replaceWithZeros is set \a from will be replaced by an empty
++	address.
++	If a \a mask is given it is applied to \a from (such that \a to is the
++	result of \a from & \a mask).
++	\return B_OK if the address could be copied
++	\return B_NO_MEMORY if the new address could not be allocated
++	\return B_BAD_VALUE if any of \a from or \a mask refers to an uninitialized
++			address
++	\return B_MISMATCHED_VALUES if \a address does not match family AF_INET
++*/
++static status_t
++ipv6_copy_address(const sockaddr *from, sockaddr **to,
++	bool replaceWithZeros = false, const sockaddr *mask = NULL)
++{
++// REVIEW: maybe there should be a generic function for both address families???
++// (for basic copying)
++	if (replaceWithZeros) {
++		*to = (sockaddr *)malloc(sizeof(sockaddr_in6));
++		if (*to == NULL)
++			return B_NO_MEMORY;
++
++		memset(*to, 0, sizeof(sockaddr_in6));
++		(*to)->sa_family = AF_INET6;
++		(*to)->sa_len = sizeof(sockaddr_in6);
++	} else {
++		if (from == NULL)
++			return B_OK;
++		if (from->sa_len == 0 || (mask != NULL && mask->sa_len == 0))
++			return B_BAD_VALUE;
++		if (from->sa_family != AF_INET6)
++			return B_MISMATCHED_VALUES;
++
++		*to = (sockaddr *)malloc(sizeof(sockaddr_in6));
++		if (*to == NULL)
++			return B_NO_MEMORY;
++
++		memcpy(*to, from, sizeof(sockaddr_in6));
++
++		if (mask != NULL)
++		    ipv6_mask_adress_inplace(*to, mask);
++	}
++	return B_OK;
++}
++
++
++/*!	Routing utility function: applies \a mask to given \a address and puts
++	the resulting address into \a result.
++	\return B_OK if the mask has been applied
++	\return B_BAD_VALUE if \a address is NULL or if any of \a address or \a mask
++			refers to an uninitialized address
++*/
++static status_t
++ipv6_mask_address(const sockaddr *address, const sockaddr *mask,
++	sockaddr *result)
++{
++	if (address == NULL || address->sa_len == 0 || result == NULL
++			|| (mask != NULL && mask->sa_len == 0))
++		return B_BAD_VALUE;
++
++	memcpy(result, address, sizeof(sockaddr_in6));
++	if (mask != NULL)
++		ipv6_mask_adress_inplace(result, mask);
++
++	return B_OK;
++}
++
++
++/*!	Checks if the given \a address is the empty address. By default, the port
++	is checked, too, but you can avoid that by passing \a checkPort = false.
++	\return true if \a address is NULL, uninitialized or the empty address,
++		false if not
++*/
++static bool
++ipv6_is_empty_address(const sockaddr *_address, bool checkPort)
++{
++	if (_address == NULL || _address->sa_len == 0)
++		return true;
++
++	const sockaddr_in6 *address = (const sockaddr_in6 *)_address;
++	if (checkPort && address->sin6_port != 0) return false;
++	return IN6_IS_ADDR_UNSPECIFIED(&address->sin6_addr);
++}
++
++
++/*!	Checks if the given \a address is an Ipv6 address.
++	\return false if \a address is NULL, or with family different from AF_INET
++		true if it has AF_INET address family
++*/
++static bool
++ipv6_is_same_family(const sockaddr *address)
++{
++	if (address == NULL)
++		return false;
++
++	return address->sa_family == AF_INET6;
++}
++
++
++/*!	Compares the IP-addresses of the two given address structures \a a and \a b.
++	\return true if IP-addresses of \a a and \a b are equal, false if not
++*/
++static bool
++ipv6_equal_addresses(const sockaddr *a, const sockaddr *b)
++{
++	if (a == NULL && b == NULL)
++		return true;
++	if (a != NULL && b == NULL)
++		return ipv6_is_empty_address(a, false);
++	if (a == NULL && b != NULL)
++		return ipv6_is_empty_address(b, false);
++
++	const sockaddr_in6 *i6a = (const sockaddr_in6 *)a;
++	const sockaddr_in6 *i6b = (const sockaddr_in6 *)b;
++	return !memcmp(&i6a->sin6_addr, &i6b->sin6_addr, sizeof(in6_addr));
++}
++
++
++/*!	Compares the ports of the two given address structures \a a and \a b.
++	\return true if ports of \a a and \a b are equal, false if not
++*/
++static bool
++ipv6_equal_ports(const sockaddr *a, const sockaddr *b)
++{
++	uint16 portA = a ? ((sockaddr_in6 *)a)->sin6_port : 0;
++	uint16 portB = b ? ((sockaddr_in6 *)b)->sin6_port : 0;
++	return portA == portB;
++}
++
++
++/*!	Compares the IP-addresses and ports of the two given address structures
++	\a a and \a b.
++	\return true if IP-addresses and ports of \a a and \a b are equal, false if
++			not
++*/
++static bool
++ipv6_equal_addresses_and_ports(const sockaddr *a, const sockaddr *b)
++{
++	if (a == NULL && b == NULL)
++		return true;
++	if (a != NULL && b == NULL)
++		return ipv6_is_empty_address(a, true);
++	if (a == NULL && b != NULL)
++		return ipv6_is_empty_address(b, true);
++
++	const sockaddr_in6 *i6a = (const sockaddr_in6 *)a;
++	const sockaddr_in6 *i6b = (const sockaddr_in6 *)b;
++	return i6a->sin6_port == i6b->sin6_port
++		&& !memcmp(&i6a->sin6_addr, &i6b->sin6_addr, sizeof(in6_addr));
++}
++
++
++/*!	Applies the given \a mask two \a a and \a b and then checks whether
++	the masked addresses match.
++	\return true if \a a matches \a b after masking both, false if not
++*/
++static bool
++ipv6_equal_masked_addresses(const sockaddr *a, const sockaddr *b,
++	const sockaddr *mask)
++{
++	if (a == NULL && b == NULL)
++		return true;
++
++	const in6_addr *i6a;
++	if (a == NULL)
++		i6a = &in6addr_any;
++	else
++		i6a = &((const sockaddr_in6*)a)->sin6_addr;
++
++	const in6_addr *i6b;
++	if (b == NULL)
++		i6b = &in6addr_any;
++	else
++		i6b = &((const sockaddr_in6*)b)->sin6_addr;
++
++ 	if (!mask)
++		return !memcmp(i6a, i6b, sizeof(in6_addr));
++
++	const uint8 *pmask = ((const sockaddr_in6 *)mask)->sin6_addr.s6_addr;
++	for (uint8 i = 0; i < sizeof(in6_addr); ++i) {
++		if (pmask[i] != 0xff) {
++			return (i6a->s6_addr[i] & pmask[i])
++				== (i6b->s6_addr[i] & pmask[i]);
++		}
++
++		if (i6a->s6_addr[i] != i6b->s6_addr[i])
++			return false;
++	}
++
++	return true;
++}
++
++
++/*!	Routing utility function: determines the least significant bit that is set
++	in the given \a mask.
++	\return the number of the first bit that is set (0-32, where 32 means
++		that there's no bit set in the mask).
++*/
++static int32
++ipv6_first_mask_bit(const sockaddr *_mask)
++{
++	if (_mask == NULL)
++		return 0;
++
++	const uint8 *pmask = ((const sockaddr_in6 *)_mask)->sin6_addr.s6_addr;
++	for (uint8 i = 0; i < sizeof(in6_addr); ++i) {
++		if (pmask[i] == 0xff)
++			continue;
++
++		for (uint8 bit = 0; bit < 8; bit++) {
++			if (pmask[i] & (1 << bit))
++				return bit;
++		}
++	}
++
++	return 128;
++}
++
++
++/*!	Routing utility function: checks the given \a mask for correctness (which
++	means that (starting with LSB) consists zero or more unset bits, followed
++	by bits that are all set).
++	\return true if \a mask is ok, false if not
++*/
++static bool
++ipv6_check_mask(const sockaddr *_mask)
++{
++	if (_mask == NULL)
++		return true;
++
++	bool zero = false;
++	const uint8 *pmask = ((const sockaddr_in6 *)_mask)->sin6_addr.s6_addr;
++	for (uint8 i = 0; i < sizeof(in6_addr); ++i) {
++		if (pmask[i] == 0xff) {
++			if (zero)
++				return false;
++		} else if (pmask[i] == 0) {
++			zero = true;
++		} else {
++			for (int8 bit = 7; bit > 0; bit--) {
++				if (pmask[i] & (1 << bit)) {
++					if (zero)
++						return false;
++				} else {
++					zero = true;
++				}
++			}
++		}
++	}
++
++	return true;
++}
++
++
++/*!	Creates a buffer for the given \a address and prints the address into
++	it (hexadecimal representation in network byte order or '<none>').
++	If \a printPort is set, the port is printed, too.
++	\return B_OK if the address could be printed, \a buffer will point to
++		the resulting string
++	\return B_BAD_VALUE if no buffer has been given
++	\return B_NO_MEMORY if the buffer could not be allocated,
++		or does not have enogh space
++*/
++static status_t
++ipv6_print_address_buffer(const sockaddr *_address, char *buffer,
++	size_t bufferSize, bool printPort)
++{
++//REVIEW - is returning B_NO_MEMORY when here is not enough room OK?
++// (ipv4 does not do that)
++	const sockaddr_in6 *address = (const sockaddr_in6 *)_address;
++
++	if (buffer == NULL)
++		return B_BAD_VALUE;
++
++	if (address == NULL) {
++		if (bufferSize < sizeof("<none>"))
++			return B_NO_MEMORY;
++		strcpy(buffer, "<none>");
++	} else {
++		if (printPort && bufferSize > 0) {
++			*buffer = '[';
++			buffer++;
++			bufferSize--;
++		}
++
++		if (!ip6_sprintf(&address->sin6_addr, buffer, bufferSize))
++			return B_NO_MEMORY;
++
++		if (printPort) {
++			char port[7];
++			sprintf(port, "]:%d", ntohs(address->sin6_port));
++			if (bufferSize - strlen(buffer) < strlen(port) + 1)
++				return B_NO_MEMORY;
++			strcat(buffer, port);
++		}
++	}
++
++	return B_OK;
++}
++
++
++static status_t
++ipv6_print_address(const sockaddr *_address, char **_buffer, bool printPort)
++{
++	if (_buffer == NULL)
++		return B_BAD_VALUE;
++
++	char tmp[64];
++	ipv6_print_address_buffer(_address, tmp, sizeof(tmp), printPort);
++
++	*_buffer = strdup(tmp);
++	if (*_buffer == NULL)
++		return B_NO_MEMORY;
++
++	return B_OK;
++}
++
++
++/*!	Determines the port of the given \a address.
++	\return uint16 representing the port-nr
++*/
++static uint16
++ipv6_get_port(const sockaddr *address)
++{
++	if (address == NULL || address->sa_len == 0)
++		return 0;
++//REVIEW: address family check not necessary?
++
++	return ((sockaddr_in6 *)address)->sin6_port;
++}
++
++
++/*!	Sets the port of the given \a address to \a port.
++	\return B_OK if the port has been set
++	\return B_BAD_VALUE if \a address is NULL or has not been initialized
++*/
++static status_t
++ipv6_set_port(sockaddr *address, uint16 port)
++{
++	if (address == NULL || address->sa_len == 0)
++		return B_BAD_VALUE;
++//REVIEW: address family check not necessary?
++
++	((sockaddr_in6 *)address)->sin6_port = port;
++	return B_OK;
++}
++
++
++/*!	Sets \a address to \a from.
++	\return B_OK if \a from has been copied into \a address
++	\return B_BAD_VALUE if either \a address or \a from is NULL or if the
++			address given in from has not been initialized
++	\return B_MISMATCHED_VALUES if from is not of family AF_INET6
++*/
++static status_t
++ipv6_set_to(sockaddr *address, const sockaddr *from)
++{
++	if (address == NULL || from == NULL || from->sa_len == 0)
++		return B_BAD_VALUE;
++
++	if (from->sa_family != AF_INET6)
++		return B_MISMATCHED_VALUES;
++
++	memcpy(address, from, sizeof(sockaddr_in6));
++	address->sa_len = sizeof(sockaddr_in6);
++	return B_OK;
++}
++
++
++/*!	Updates missing parts in \a address with the values in \a from.
++	\return B_OK if \a address has been updated from \a from
++	\return B_BAD_VALUE if either \a address or \a from is NULL or if the
++			address given in from has not been initialized
++	\return B_MISMATCHED_VALUES if from is not of family AF_INET6
++*/
++static status_t
++ipv6_update_to(sockaddr *_address, const sockaddr *_from)
++{
++	sockaddr_in6 *address = (sockaddr_in6 *)_address;
++	const sockaddr_in6 *from = (const sockaddr_in6 *)_from;
++
++	if (address == NULL || from == NULL || from->sin6_len == 0)
++		return B_BAD_VALUE;
++
++	if (from->sin6_family != AF_INET6)
++		return B_BAD_VALUE;
++
++	address->sin6_family = AF_INET6;
++	address->sin6_len = sizeof(sockaddr_in6);
++
++	if (address->sin6_port == 0)
++		address->sin6_port = from->sin6_port;
++
++	if (IN6_IS_ADDR_UNSPECIFIED(&address->sin6_addr)) {
++		memcpy(address->sin6_addr.s6_addr, from->sin6_addr.s6_addr,
++			sizeof(in6_addr));
++	}
++
++	return B_OK;
++}
++
++
++/*!	Sets \a address to the empty address (0.0.0.0).
++	\return B_OK if \a address has been set
++	\return B_BAD_VALUE if \a address is NULL
++*/
++static status_t
++ipv6_set_to_empty_address(sockaddr *address)
++{
++	if (address == NULL)
++		return B_BAD_VALUE;
++
++	memset(address, 0, sizeof(sockaddr_in6));
++	address->sa_len = sizeof(sockaddr_in6);
++	address->sa_family = AF_INET6;
++	return B_OK;
++}
++
++
++static status_t
++ipv6_set_to_defaults(sockaddr *_defaultMask, sockaddr *_defaultBroadcast,
++	sockaddr *_address, sockaddr *_mask)
++{
++//REVIEW: does this function even make sense for ipv6?
++	sockaddr_in6 *defaultMask = (sockaddr_in6 *)_defaultMask;
++	sockaddr_in6 *defaultBroadcast = (sockaddr_in6 *)_defaultBroadcast;
++	sockaddr_in6 *address = (sockaddr_in6 *)_address;
++	sockaddr_in6 *mask = (sockaddr_in6 *)_mask;
++
++	if (address == NULL || (defaultMask == NULL && defaultBroadcast == NULL))
++		return B_BAD_VALUE;
++
++	if (defaultMask != NULL) {
++		defaultMask->sin6_len = sizeof(sockaddr_in);
++		defaultMask->sin6_family = AF_INET6;
++		defaultMask->sin6_port = 0;
++		if (mask != NULL) {
++			memcpy(defaultMask->sin6_addr.s6_addr,
++				mask->sin6_addr.s6_addr, sizeof(in6_addr));
++		} else {
++			// use /128 as the default mask
++			// TODO: possibly makes more sense to have /64 as the default mask?
++			memset(defaultMask->sin6_addr.s6_addr, 0xff, sizeof(in6_addr));
++		}
++	}
++
++	if (defaultBroadcast != NULL) {
++		// TODO: there is no notion of broadcast address at all for ipv6
++		defaultBroadcast->sin6_len = sizeof(sockaddr_in6);
++		defaultBroadcast->sin6_family = AF_INET6;
++		defaultBroadcast->sin6_port = 0;
++		// value of all 0's is a good as any other -
++		// the broadcast addres should never be used in any case
++		memset(defaultBroadcast->sin6_addr.s6_addr, 0, sizeof(in6_addr));
++	}
++
++	return B_OK;
++}
++
++
++/*!	Computes a hash-value of the given addresses \a ourAddress
++	and \a peerAddress.
++	\return uint32 representing the hash-value
++*/
++static uint32
++ipv6_hash_address_pair(const sockaddr *ourAddress, const sockaddr *peerAddress)
++{
++	uint32 result = 0;
++	if (ourAddress) {
++		const sockaddr_in6 *our = (const sockaddr_in6 *)ourAddress;
++		uint32 port = our->sin6_port;
++
++		result = jenkins_hashword((const uint32*)&our->sin6_addr,
++			sizeof(in6_addr) / sizeof(uint32), result);
++		result = jenkins_hashword(&port, 1, result);
++	}
++	if (peerAddress) {
++		const sockaddr_in6 *peer = (const sockaddr_in6 *)peerAddress;
++		uint32 port = peer->sin6_port;
++
++		result = jenkins_hashword((const uint32*)&peer->sin6_addr,
++			sizeof(in6_addr) / sizeof(uint32), result);
++		result = jenkins_hashword(&port, 1, result);
++	}
++
++	// TODO: what about sin6_flowinfo and sin6_scope_id?
++	return result;
++}
++
++
++/*!	Adds the given \a address to the IP-checksum \a checksum.
++	\return B_OK if \a address has been added to the checksum
++	\return B_BAD_VALUE if either \a address or \a checksum is NULL or if
++	        the given address is not initialized
++*/
++static status_t
++ipv6_checksum_address(struct Checksum *checksum, const sockaddr *address)
++{
++	if (checksum == NULL || address == NULL || address->sa_len == 0)
++		return B_BAD_VALUE;
++
++	in6_addr &a = ((sockaddr_in6 *)address)->sin6_addr;
++	for (uint32 i = 0; i < sizeof(in6_addr); i++)
++		(*checksum) << a.s6_addr[i];
++
++	return B_OK;
++}
++
++
++static void
++ipv6_get_loopback_address(sockaddr *_address)
++{
++	sockaddr_in6 *address = (sockaddr_in6 *)_address;
++	memset(address, 0, sizeof(sockaddr_in6));
++	address->sin6_len = sizeof(sockaddr_in6);
++	address->sin6_family = AF_INET6;
++	memcpy(&address->sin6_addr, &in6addr_loopback, sizeof(in6_addr));
++}
++
++
++net_address_module_info gIPv6AddressModule = {
++	{
++		NULL,
++		0,
++		NULL
++	},
++	ipv6_copy_address,
++	ipv6_mask_address,
++	ipv6_equal_addresses,
++	ipv6_equal_ports,
++	ipv6_equal_addresses_and_ports,
++	ipv6_equal_masked_addresses,
++	ipv6_is_empty_address,
++	ipv6_is_same_family,
++	ipv6_first_mask_bit,
++	ipv6_check_mask,
++	ipv6_print_address,
++	ipv6_print_address_buffer,
++	ipv6_get_port,
++	ipv6_set_port,
++	ipv6_set_to,
++	ipv6_set_to_empty_address,
++	ipv6_set_to_defaults,
++	ipv6_update_to,
++	ipv6_hash_address_pair,
++	ipv6_checksum_address,
++	ipv6_get_loopback_address
++};
+Index: src/add-ons/kernel/network/protocols/Jamfile
+===================================================================
+--- src/add-ons/kernel/network/protocols/Jamfile	(revision 37397)
++++ src/add-ons/kernel/network/protocols/Jamfile	(working copy)
+@@ -2,6 +2,7 @@
+ 
+ SubInclude HAIKU_TOP src add-ons kernel network protocols icmp ;
+ SubInclude HAIKU_TOP src add-ons kernel network protocols ipv4 ;
++SubInclude HAIKU_TOP src add-ons kernel network protocols ipv6 ;
+ SubInclude HAIKU_TOP src add-ons kernel network protocols l2cap ;
+ SubInclude HAIKU_TOP src add-ons kernel network protocols tcp ;
+ SubInclude HAIKU_TOP src add-ons kernel network protocols udp ;
+Index: src/add-ons/kernel/network/protocols/udp/udp.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/udp/udp.cpp	(revision 37397)
++++ src/add-ons/kernel/network/protocols/udp/udp.cpp	(working copy)
+@@ -1207,17 +1207,34 @@
+ 		NULL);
+ 	if (status < B_OK)
+ 		goto err1;
++	status = gStackModule->register_domain_protocols(AF_INET6, SOCK_DGRAM, IPPROTO_IP,
++		"network/protocols/udp/v1",
++		"network/protocols/ipv6/v1",
++		NULL);
++	if (status < B_OK)
++		goto err1;
++
+ 	status = gStackModule->register_domain_protocols(AF_INET, SOCK_DGRAM, IPPROTO_UDP,
+ 		"network/protocols/udp/v1",
+ 		"network/protocols/ipv4/v1",
+ 		NULL);
+ 	if (status < B_OK)
+ 		goto err1;
++	status = gStackModule->register_domain_protocols(AF_INET6, SOCK_DGRAM, IPPROTO_UDP,
++		"network/protocols/udp/v1",
++		"network/protocols/ipv6/v1",
++		NULL);
++	if (status < B_OK)
++		goto err1;
+ 
+ 	status = gStackModule->register_domain_receiving_protocol(AF_INET, IPPROTO_UDP,
+ 		"network/protocols/udp/v1");
+ 	if (status < B_OK)
+ 		goto err1;
++	status = gStackModule->register_domain_receiving_protocol(AF_INET6, IPPROTO_UDP,
++		"network/protocols/udp/v1");
++	if (status < B_OK)
++		goto err1;
+ 
+ 	add_debugger_command("udp_endpoints", UdpEndpointManager::DumpEndpoints,
+ 		"lists all open UDP endpoints");
+Index: src/add-ons/kernel/network/stack/net_socket.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/net_socket.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/net_socket.cpp	(working copy)
+@@ -503,6 +503,7 @@
+ status_t
+ socket_control(net_socket* socket, int32 op, void* data, size_t length)
+ {
++//    dprintf("socket_control, op=%u\n", op);
+ 	switch (op) {
+ 		case FIONBIO:
+ 		{
+Index: src/add-ons/kernel/network/stack/stack.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/stack.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/stack.cpp	(working copy)
+@@ -32,7 +32,7 @@
+ #include <string.h>
+ 
+ 
+-//#define TRACE_STACK
++#define TRACE_STACK
+ #ifdef TRACE_STACK
+ #	define TRACE(x) dprintf x
+ #else
+@@ -503,8 +503,10 @@
+ static void
+ uninit_domain_datalink_protocols(net_interface* interface)
+ {
++	dprintf("uninit_domain_datalink_protocols\n");
+ 	net_datalink_protocol* protocol = interface->first_protocol;
+ 	while (protocol != NULL) {
++		dprintf("uninit some dl protocol\n");
+ 		net_datalink_protocol* next = protocol->next;
+ 		protocol->module->uninit_protocol(protocol);
+ 
+@@ -519,6 +521,7 @@
+ status_t
+ get_domain_datalink_protocols(net_interface* _interface)
+ {
++    dprintf("get_domain_datalink_protocols\n");
+ 	struct net_interface_private* interface = (net_interface_private*)_interface;
+ 	struct chain* chain;
+ 
+@@ -527,8 +530,14 @@
+ 
+ 		chain = chain::Lookup(sDatalinkProtocolChains, interface->domain->family,
+ 			interface->device_interface->device->type, 0);
+-		if (chain == NULL)
++		if (chain == NULL) {
++//                    dprintf("get_domain_datalink_protocols: chain lookup failed,"
++//                           "family=%u, type=%u\n",
++//                           interface->domain->family,
++//                           interface->device_interface->device->type);
++			dprintf("gddp: chain lookup failed\n");
+ 			return EAFNOSUPPORT;
++		}
+ 	}
+ 
+ 	// create net_protocol objects for the protocols in the chain
+@@ -539,21 +548,35 @@
+ 
+ 	net_datalink_protocol* last = NULL;
+ 
++	dprintf("gddp: traverse list\n");
++
+ 	for (int32 i = 0; chain->infos[i] != NULL; i++) {
+ 		net_datalink_protocol* protocol;
++		dprintf("gddp: call init_protocol\n");
++//		if (((net_datalink_protocol_module_info*)
++//				chain->infos[i])->init_protocol == NULL) {
++//			dprintf("gddp: the init_protocol for infos[%d] is NULL!\n", i);
++//			continue;
++//		}
++
+ 		status_t status = ((net_datalink_protocol_module_info*)
+ 			chain->infos[i])->init_protocol(interface, &protocol);
+ 		if (status < B_OK) {
++			dprintf("gddp: init_protocol failed\n");
+ 			// free protocols we already initialized
+-			uninit_domain_datalink_protocols(interface);
++//			uninit_domain_datalink_protocols(interface);
+ 			chain->Release();
+ 			return status;
+ 		}
+ 
++		dprintf("gddp: init_protocol ok\n");
++
+ 		protocol->module = (net_datalink_protocol_module_info*)chain->infos[i];
+ 		protocol->interface = interface;
+ 		protocol->next = NULL;
+ 
++		dprintf("gddp: setup ok\n");
++
+ 		if (last == NULL) {
+ 			interface->first_protocol = protocol;
+ 			interface->first_info = protocol->module;
+@@ -561,6 +584,8 @@
+ 			last->next = protocol;
+ 
+ 		last = protocol;
++
++		dprintf("gddp: linked ok\n");
+ 	}
+ 
+ 	return B_OK;
+@@ -813,11 +838,17 @@
+ 	// TODO: for now!
+ 	register_domain_datalink_protocols(AF_INET, IFT_LOOP,
+ 		"network/datalink_protocols/loopback_frame/v1", NULL);
++	register_domain_datalink_protocols(AF_INET6, IFT_LOOP,
++		"network/datalink_protocols/loopback_frame/v1", NULL);
+ 	register_domain_datalink_protocols(AF_INET, IFT_ETHER,
+ 		"network/datalink_protocols/ipv4_datagram/v1",
+ 		"network/datalink_protocols/arp/v1",
+ 		"network/datalink_protocols/ethernet_frame/v1",
+ 		NULL);
++	register_domain_datalink_protocols(AF_INET6, IFT_ETHER,
++		"network/datalink_protocols/ipv6_datagram/v1",
++		"network/datalink_protocols/ethernet_frame/v1",
++		NULL);
+ 
+ 	return B_OK;
+ 
+Index: src/add-ons/kernel/network/stack/routes.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/routes.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/routes.cpp	(working copy)
+@@ -29,7 +29,7 @@
+ #include <sys/sockio.h>
+ 
+ 
+-//#define TRACE_ROUTES
++#define TRACE_ROUTES
+ #ifdef TRACE_ROUTES
+ #	define TRACE(x) dprintf x
+ #else
+@@ -335,6 +335,8 @@
+ {
+ 	RecursiveLocker _(domain->lock);
+ 
++	dprintf("list_routes for family %d\n", domain->family);
++
+ 	RouteList::Iterator iterator = domain->routes.GetIterator();
+ 	size_t spaceLeft = size;
+ 
+Index: src/add-ons/kernel/network/stack/interfaces.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/interfaces.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/interfaces.cpp	(working copy)
+@@ -320,6 +320,8 @@
+ create_interface(net_domain* domain, const char* name, const char* baseName,
+ 	net_device_interface* deviceInterface, net_interface_private** _interface)
+ {
++    dprintf("create_interface, name=%s\n", name);
++
+ 	net_interface_private* interface = new(std::nothrow) net_interface_private;
+ 	if (interface == NULL)
+ 		return B_NO_MEMORY;
+Index: src/add-ons/kernel/network/stack/stack_interface.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/stack_interface.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/stack_interface.cpp	(working copy)
+@@ -217,6 +217,7 @@
+ stack_interface_ioctl(net_socket* socket, uint32 op, void* buffer,
+ 	size_t length)
+ {
++//    dprintf("stack_interface_ioctl, op=%u\n", op);
+ 	return gNetSocketModule.control(socket, op, buffer, length);
+ }
+ 
+Index: src/add-ons/kernel/network/stack/datalink.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/datalink.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/datalink.cpp	(working copy)
+@@ -105,6 +105,7 @@
+ 		case SIOCSIFDSTADDR:
+ 		case SIOCGIFBRDADDR:
+ 		case SIOCGIFDSTADDR:
++		    // TODO: should return NULL for IPv6
+ 			return &interface->destination;
+ 
+ 		default:
+@@ -117,6 +118,9 @@
+ static void
+ remove_default_routes(net_interface_private* interface, int32 option)
+ {
++	dprintf("remove_default_routes, iface=%s, opt=%d\n",
++		interface->name, option);
++
+ 	net_route route;
+ 	route.destination = interface->address;
+ 	route.gateway = NULL;
+@@ -143,6 +147,9 @@
+ static void
+ add_default_routes(net_interface_private* interface, int32 option)
+ {
++	dprintf("add_default_routes, iface=%s, opt=%d\n",
++		interface->name, option);
++
+ 	net_route route;
+ 	route.destination = interface->address;
+ 	route.gateway = NULL;
+@@ -236,6 +243,7 @@
+ datalink_control(net_domain* _domain, int32 option, void* value,
+ 	size_t* _length)
+ {
++//    dprintf("datalink_control, op=%u\n", option);
+ 	net_domain_private* domain = (net_domain_private*)_domain;
+ 	if (domain == NULL || domain->family == AF_LINK) {
+ 		// the AF_LINK family is already handled completely in the link protocol
+@@ -375,6 +383,7 @@
+ datalink_send_datagram(net_protocol* protocol, net_domain* domain,
+ 	net_buffer* buffer)
+ {
++	dprintf("datalink_send_datagram\n");
+ 	if (protocol == NULL && domain == NULL)
+ 		return B_BAD_VALUE;
+ 
+@@ -675,6 +684,9 @@
+ 	net_interface_private* interface
+ 		= (net_interface_private*)protocol->interface;
+ 
++//        dprintf("interface_protocol_control: interface %s, option=%u\n",
++//                interface->name, option);
++
+ 	switch (option) {
+ 		case SIOCSIFADDR:
+ 		case SIOCSIFNETMASK:
+Index: src/add-ons/kernel/network/stack/domains.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/domains.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/domains.cpp	(working copy)
+@@ -191,6 +191,7 @@
+ add_interface_to_domain(net_domain* _domain,
+ 	struct ifreq& request)
+ {
++    dprintf("add_interface_to_domain\n");
+ 	net_domain_private* domain = (net_domain_private*)_domain;
+ 
+ 	const char* deviceName = request.ifr_parameter.device[0]
+@@ -253,6 +254,7 @@
+ domain_interface_control(net_domain_private* domain, int32 option,
+ 	ifreq* request)
+ {
++    dprintf("domain_interface_control, op=%u\n", option);
+ 	const char* name = request->ifr_name;
+ 	status_t status = B_OK;
+ 
+Index: src/add-ons/kernel/network/stack/link.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/link.cpp	(revision 37397)
++++ src/add-ons/kernel/network/stack/link.cpp	(working copy)
+@@ -239,6 +239,8 @@
+ link_control(net_protocol* _protocol, int level, int option, void* value,
+ 	size_t* _length)
+ {
++//    dprintf("link_control, op=%u\n", option);
++
+ 	LinkProtocol* protocol = (LinkProtocol*)_protocol;
+ 
+ 	switch (option) {
+Index: src/add-ons/kernel/network/datalink_protocols/ipv4_datagram/ipv4_datagram.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv4_datagram/ipv4_datagram.cpp	(revision 37397)
++++ src/add-ons/kernel/network/datalink_protocols/ipv4_datagram/ipv4_datagram.cpp	(working copy)
+@@ -19,7 +19,13 @@
+ 
+ #include <new>
+ 
++//
++// TODO: ipv6 - almost all of this code is version indepdendent,
++// so there is no need to copy all; just use create base class or something
++// and use ETHER_TYPE_IPV6 where needed
++//
+ 
++
+ static net_stack_module_info *sStackModule;
+ // TODO ETHER_FRAME_TYPE doesn't belong there, we need Layer 2
+ //      independence.
+@@ -39,6 +45,7 @@
+ 	if (interface->device->type == IFT_LOOP)
+ 		return B_BAD_TYPE;
+ 
++//	net_datalink_protocol *protocol = NULL;
+ 	net_datalink_protocol *protocol = new (std::nothrow) net_datalink_protocol;
+ 	if (protocol == NULL)
+ 		return B_NO_MEMORY;
+@@ -93,6 +100,7 @@
+ ipv4_datalink_control(net_datalink_protocol *protocol, int32 op,
+ 	void *argument, size_t length)
+ {
++//    dprintf("ipv4_datalink_control, op=%u\n", op);
+ 	return protocol->next->module->control(protocol->next, op, argument, length);
+ }
+ 
+Index: src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp	(revision 0)
++++ src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp	(revision 0)
+@@ -0,0 +1,151 @@
++/*
++ * Copyright 2007, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Hugo Santos, hugosantos@gmail.com
++ */
++
++
++#include <net_datalink.h>
++#include <net_datalink_protocol.h>
++#include <net_device.h>
++#include <net_stack.h>
++
++#include <KernelExport.h>
++
++#include <net/ethernet.h> // for ETHER_TYPE_IPV6
++#include <net/if_types.h>
++
++#include <new>
++
++static net_stack_module_info *sStackModule;
++// TODO ETHER_FRAME_TYPE doesn't belong there, we need Layer 2
++//      independence.
++static const int32 kIPv6FrameType = ETHER_FRAME_TYPE | ETHER_TYPE_IPV6;
++
++
++static status_t
++ipv6_datalink_init(net_interface *interface, net_datalink_protocol **_protocol)
++{
++	dprintf("ipv6_datalink_init(%s)\n", interface->name);
++
++	if (interface->domain->family != AF_INET6)
++		return B_BAD_TYPE;
++
++	// While the loopback doesn't get a header to mux protocols,
++	// we let it do all of the registration work.
++	if (interface->device->type == IFT_LOOP)
++		return B_BAD_TYPE;
++
++	net_datalink_protocol *protocol = new (std::nothrow) net_datalink_protocol;
++	if (protocol == NULL)
++		return B_NO_MEMORY;
++
++	// We register ETHER_TYPE_IPV6 as most datalink protocols use it
++	// to identify IPv6 datagrams. In the future we may limit this.
++
++	status_t status = sStackModule->register_domain_device_handler(
++		interface->device, kIPv6FrameType, interface->domain);
++	if (status < B_OK)
++		delete protocol;
++	else
++		*_protocol = protocol;
++
++	return status;
++}
++
++
++static status_t
++ipv6_datalink_uninit(net_datalink_protocol *protocol)
++{
++	dprintf("ipv6_datalink_uninit(%s)\n", protocol->interface->device->name);
++
++	sStackModule->unregister_device_handler(protocol->interface->device,
++		kIPv6FrameType);
++	delete protocol;
++	return B_OK;
++}
++
++
++static status_t
++ipv6_datalink_send_data(net_datalink_protocol *protocol, net_buffer *buffer)
++{
++	return protocol->next->module->send_data(protocol->next, buffer);
++}
++
++
++static status_t
++ipv6_datalink_up(net_datalink_protocol *protocol)
++{
++	return protocol->next->module->interface_up(protocol->next);
++}
++
++
++static void
++ipv6_datalink_down(net_datalink_protocol *protocol)
++{
++	// TODO Clear routes here instead?
++	protocol->next->module->interface_down(protocol->next);
++}
++
++
++static status_t
++ipv6_datalink_control(net_datalink_protocol *protocol, int32 op,
++	void *argument, size_t length)
++{
++//    dprintf("ipv6_datalink_control, op=%u\n", op);
++	return protocol->next->module->control(protocol->next, op, argument, length);
++}
++
++
++static status_t
++ipv6_datalink_join_multicast(net_datalink_protocol *protocol,
++	const sockaddr *address)
++{
++	return protocol->next->module->join_multicast(protocol->next, address);
++}
++
++
++static status_t
++ipv6_datalink_leave_multicast(net_datalink_protocol *protocol,
++	const sockaddr *address)
++{
++	return protocol->next->module->leave_multicast(protocol->next, address);
++}
++
++
++static status_t
++ipv6_datalink_std_ops(int32 op, ...)
++{
++	switch (op) {
++	case B_MODULE_INIT:
++		return get_module(NET_STACK_MODULE_NAME, (module_info **)&sStackModule);
++
++	case B_MODULE_UNINIT:
++		return put_module(NET_STACK_MODULE_NAME);
++	}
++
++	return B_ERROR;
++}
++
++net_datalink_protocol_module_info gIPv6DataLinkModule = {
++	{
++		"network/datalink_protocols/ipv6_datagram/v1",
++		0,
++		ipv6_datalink_std_ops
++	},
++	ipv6_datalink_init,
++	ipv6_datalink_uninit,
++	ipv6_datalink_send_data,
++	ipv6_datalink_up,
++	ipv6_datalink_down,
++	ipv6_datalink_control,
++	ipv6_datalink_join_multicast,
++	ipv6_datalink_leave_multicast,
++};
++
++module_info *modules[] = {
++	(module_info *)&gIPv6DataLinkModule,
++	NULL
++};
+Index: src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/Jamfile
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/Jamfile	(revision 0)
++++ src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/Jamfile	(revision 0)
+@@ -0,0 +1,50 @@
++SubDir HAIKU_TOP src add-ons kernel network datalink_protocols ipv6_datagram ;
++
++SetSubDirSupportedPlatformsBeOSCompatible ;
++
++if $(TARGET_PLATFORM) != haiku {
++	UseHeaders [ FStandardOSHeaders ] : true ;
++		# Needed for <support/Errors.h> and maybe other stuff.
++	UseHeaders [ FDirName $(HAIKU_TOP) headers posix ] : true ;
++		# We need the public network headers also when not compiling for Haiku.
++		# Unfortunately we get more than we want, namely all POSIX headers.
++}
++
++UsePrivateHeaders kernel net ;
++
++KernelAddon ipv6_datagram :
++	ipv6_datagram.cpp
++;
++
++# Installation
++HaikuInstall install-networking : /boot/home/config/add-ons/kernel/haiku_network/datalink_protocols
++	: ipv6_datagram ;
++
++Package haiku-networkingkit-cvs :
++	haiku :
++	boot home config add-ons kernel haiku_network datalink_protocols ;
++SubDir HAIKU_TOP src add-ons kernel network datalink_protocols ipv6_datagram ;
++
++SetSubDirSupportedPlatformsBeOSCompatible ;
++
++if $(TARGET_PLATFORM) != haiku {
++	UseHeaders [ FStandardOSHeaders ] : true ;
++		# Needed for <support/Errors.h> and maybe other stuff.
++	UseHeaders [ FDirName $(HAIKU_TOP) headers posix ] : true ;
++		# We need the public network headers also when not compiling for Haiku.
++		# Unfortunately we get more than we want, namely all POSIX headers.
++}
++
++UsePrivateHeaders kernel net ;
++
++KernelAddon ipv6_datagram :
++	ipv6_datagram.cpp
++;
++
++# Installation
++HaikuInstall install-networking : /boot/home/config/add-ons/kernel/haiku_network/datalink_protocols
++	: ipv6_datagram ;
++
++Package haiku-networkingkit-cvs :
++	haiku :
++	boot home config add-ons kernel haiku_network datalink_protocols ;
+Index: src/add-ons/kernel/network/datalink_protocols/Jamfile
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/Jamfile	(revision 37397)
++++ src/add-ons/kernel/network/datalink_protocols/Jamfile	(working copy)
+@@ -3,4 +3,5 @@
+ SubInclude HAIKU_TOP src add-ons kernel network datalink_protocols arp ;
+ SubInclude HAIKU_TOP src add-ons kernel network datalink_protocols ethernet_frame ;
+ SubInclude HAIKU_TOP src add-ons kernel network datalink_protocols ipv4_datagram ;
++SubInclude HAIKU_TOP src add-ons kernel network datalink_protocols ipv6_datagram ;
+ SubInclude HAIKU_TOP src add-ons kernel network datalink_protocols loopback_frame ;
+Index: src/bin/network/ifconfig/ifconfig.cpp
+===================================================================
+--- src/bin/network/ifconfig/ifconfig.cpp	(revision 37397)
++++ src/bin/network/ifconfig/ifconfig.cpp	(working copy)
+@@ -1,10 +1,11 @@
+ /*
+- * Copyright 2006-2008, Haiku, Inc. All Rights Reserved.
++ * Copyright 2006-2010, Haiku, Inc. All Rights Reserved.
+  * Distributed under the terms of the MIT License.
+  *
+  * Authors:
+  *		Axel Dörfler, axeld@pinc-software.de
+  *		Oliver Tappe, zooey@hirschkaefer.de
++ *		Atis Elsts, the.kfx@gmail.com
+  */
+ 
+ 
+@@ -33,30 +34,83 @@
+ const char* kProgramName = __progname;
+ 
+ 
++enum preferred_output_format
++{
++	PREFER_OUTPUT_MASK,
++	PREFER_OUTPUT_PREFIX_LENGTH,
++};
++
++
+ struct address_family {
+ 	int			family;
+ 	const char*	name;
+ 	const char*	identifiers[4];
++	preferred_output_format	preferred_format;
+ 	bool		(*parse_address)(const char* string, sockaddr* _address);
++	bool		(*prefix_length_to_mask)(uint8 prefixLength, sockaddr* mask);
++	uint8		(*mask_to_prefix_length)(sockaddr* mask);
+ 	void		(*print_address)(sockaddr* address);
+ };
+ 
++bool initialize_address_families();
++
+ // AF_INET family
+ static bool inet_parse_address(const char* string, sockaddr* address);
++static bool inet_prefix_length_to_mask(uint8 prefixLength, sockaddr* mask);
++static uint8 inet_mask_to_prefix_length(sockaddr* mask);
+ static void inet_print_address(sockaddr* address);
+ 
++// AF_INET6 family
++static bool inet6_parse_address(const char* string, sockaddr* address);
++static bool inet6_prefix_length_to_mask(uint8 prefixLength, sockaddr* mask);
++static uint8 inet6_mask_to_prefix_length(sockaddr* mask);
++static void inet6_print_address(sockaddr* address);
++
+ static const address_family kFamilies[] = {
+ 	{
+ 		AF_INET,
+ 		"inet",
+ 		{"AF_INET", "inet", "ipv4", NULL},
++		PREFER_OUTPUT_MASK,
+ 		inet_parse_address,
++		inet_prefix_length_to_mask,
++		inet_mask_to_prefix_length,
+ 		inet_print_address
+ 	},
+-	{ -1, NULL, {NULL}, NULL, NULL }
++	{
++		AF_INET6,
++		"inet6",
++		{"AF_INET6", "inet6", "ipv6", NULL},
++		PREFER_OUTPUT_PREFIX_LENGTH,
++		inet6_parse_address,
++		inet6_prefix_length_to_mask,
++		inet6_mask_to_prefix_length,
++		inet6_print_address
++	},
++	{ -1, NULL, {NULL}, PREFER_OUTPUT_MASK, NULL, NULL, NULL, NULL }
+ };
+ 
+ 
++static int sAddressFamilySockets[sizeof(kFamilies) / sizeof(kFamilies[0])];
++
++
++bool
++initialize_address_families()
++{
++	bool ok = false;
++	// REVIEWME: does this mean the families are not constant ('k') anymore?
++	for (int32 i = 0; kFamilies[i].family >= 0; i++) {
++		int fd = socket(kFamilies[i].family, SOCK_DGRAM, 0);
++		if (fd != -1) {
++			sAddressFamilySockets[i] = fd;
++			ok = true;
++		}
++	}
++	return ok;
++}
++
++
++
+ static bool
+ inet_parse_address(const char* string, sockaddr* _address)
+ {
+@@ -67,7 +121,7 @@
+ 
+ 	sockaddr_in& address = *(sockaddr_in *)_address;
+ 	address.sin_family = AF_INET;
+-	address.sin_len = sizeof(struct sockaddr_in);
++	address.sin_len = sizeof(sockaddr_in);
+ 	address.sin_port = 0;
+ 	address.sin_addr = inetAddress;
+ 	memset(&address.sin_zero[0], 0, sizeof(address.sin_zero));
+@@ -76,6 +130,46 @@
+ }
+ 
+ 
++static bool
++inet_prefix_length_to_mask(uint8 prefixLength, sockaddr* _mask)
++{
++	if (prefixLength > 32)
++		return false;
++
++	sockaddr_in& mask = *(sockaddr_in *)_mask;
++	mask.sin_family = AF_INET;
++        mask.sin_len = sizeof(sockaddr_in);
++	mask.sin_port = 0;
++	memset(&mask.sin_zero[0], 0, sizeof(mask.sin_zero));
++
++	uint32 u32mask = 0;
++	for (uint8 i = 0; i < prefixLength; ++i)
++		u32mask |= 1 << (i - 1);
++	mask.sin_addr.s_addr = htonl(u32mask);
++
++	return true;
++}
++
++
++static uint8
++inet_mask_to_prefix_length(sockaddr* _mask)
++{
++	sockaddr_in& mask = *(sockaddr_in *)_mask;
++	if (mask.sin_family != AF_INET)
++	    return (uint8)-1;
++
++	uint8 result = 0;
++	uint32 u32mask = ntohl(mask.sin_addr.s_addr);
++	for (uint8 i = 0; i < 32; ++i) {
++		if (!(u32mask & (1 << i)))
++			break;
++		result++;
++	}
++
++	return result;
++}
++
++
+ static void
+ inet_print_address(sockaddr* _address)
+ {
+@@ -88,6 +182,94 @@
+ }
+ 
+ 
++static bool
++inet6_parse_address(const char* string, sockaddr* _address)
++{
++	sockaddr_in6& address = *(sockaddr_in6 *)_address;
++
++	if (inet_pton(AF_INET6, string, &address.sin6_addr) != 1)
++		return false;
++
++	address.sin6_family = AF_INET6;
++	address.sin6_len = sizeof(sockaddr_in6);
++	address.sin6_port = 0;
++	address.sin6_flowinfo = 0;
++	address.sin6_scope_id = 0;
++
++// char buffer[INET6_ADDRSTRLEN];
++// 	printf("inet6_parse_address: ok, address=%s",
++//     inet_ntop(AF_INET6, &address.sin6_addr, buffer, sizeof(buffer)));
++
++	return true;
++}
++
++
++static bool
++inet6_prefix_length_to_mask(uint8 prefixLength, sockaddr* _mask)
++{
++	if (prefixLength > 128)
++		return false;
++
++	sockaddr_in6& mask = *(sockaddr_in6 *)_mask;
++	mask.sin6_family = AF_INET6;
++	mask.sin6_len = sizeof(sockaddr_in6);
++	mask.sin6_port = 0;
++	mask.sin6_flowinfo = 0;
++	mask.sin6_scope_id = 0;
++	memset(mask.sin6_addr.s6_addr, 0, sizeof(in6_addr));
++
++	for (uint8 i = 0; i < sizeof(in6_addr); i++, prefixLength -= 8) {
++		if (prefixLength < 8) {
++			const uint8 masks[] = {
++				0x00, 0x80, 0xc0, 0xe0,
++				0xf0, 0xf8, 0xfc, 0xfe
++			};
++			mask.sin6_addr.s6_addr[i] = masks[prefixLength];
++			break;
++		}
++
++		mask.sin6_addr.s6_addr[i] = 0xff;
++	}
++
++	return true;
++}
++
++
++static uint8
++inet6_mask_to_prefix_length(sockaddr* _mask)
++{
++	sockaddr_in6& mask = *(sockaddr_in6 *)_mask;
++	if (mask.sin6_family != AF_INET6)
++		return (uint8)-1;
++
++	uint8 result = 0;
++	for (uint8 i = 0; i < sizeof(in6_addr); i++) {
++		for (uint8 j = 0; j < 8; j++) {
++			if (!(mask.sin6_addr.s6_addr[i] & (1 << j)))
++				return result;
++			result++;
++		}
++	}
++
++	return 128;
++}
++
++
++static void
++inet6_print_address(sockaddr* _address)
++{
++	sockaddr_in6& address = *(sockaddr_in6 *)_address;
++
++	if (address.sin6_family != AF_INET6)
++		return;
++
++	char buffer[INET6_ADDRSTRLEN];
++
++	printf("%s",
++		inet_ntop(AF_INET6, &address.sin6_addr, buffer, sizeof(buffer)));
++}
++
++
+ //	#pragma mark -
+ 
+ 
+@@ -181,12 +363,13 @@
+ 			"auto-config] [<option/flags>...]]\n"
+ 		"\t%s --delete interface [...]\n\n"
+ 		"Where <option> can be the following:\n"
+-		"  netmask <addr>   - networking subnet mask\n"
+-		"  broadcast <addr> - set broadcast address\n"
+-		"  peer <addr>      - ppp-peer address\n"
+-		"  mtu <bytes>      - maximal transfer unit\n"
+-		"  metric <number>  - metric number to use (defaults to 0)\n"
+-		"  media <media>    - media type to use (defaults to auto)\n",
++		"  netmask <addr>     - networking subnet mask\n"
++		"  prefixlen <number> - subnet mask length in bits\n"
++		"  broadcast <addr>   - set broadcast address\n"
++		"  peer <addr>        - ppp-peer address\n"
++		"  mtu <bytes>        - maximal transfer unit\n"
++		"  metric <number>    - metric number to use (defaults to 0)\n"
++		"  media <media>      - media type to use (defaults to auto)\n",
+ 		kProgramName, kProgramName);
+ 	for (int32 i = 0; kMediaTypes[i].type >= 0; i++) {
+ 		printf("For %s <media> can be one of: ", kMediaTypes[i].pretty);
+@@ -210,8 +393,8 @@
+ prepare_request(struct ifreq& request, const char* name)
+ {
+ 	if (strlen(name) > IF_NAMESIZE) {
+-		fprintf(stderr, "%s: interface name \"%s\" is too long.\n", kProgramName,
+-			name);
++		fprintf(stderr, "%s: interface name \"%s\" is too long.\n",
++			kProgramName, name);
+ 		return false;
+ 	}
+ 
+@@ -249,20 +432,78 @@
+ }
+ 
+ 
++bool
++prefix_length_to_mask(int32 familyIndex, const char* argument,
++	struct sockaddr& mask)
++{
++	if (argument == NULL)
++		return false;
++
++	char *end;
++	uint32 prefixLength = strtoul(argument, &end, 10);
++	if (end == argument)
++		return false;
++
++	return kFamilies[familyIndex].prefix_length_to_mask(
++		(uint8)prefixLength, &mask);
++}
++
++
+ //	#pragma mark -
+ 
+ 
+ void
+-list_interface(int socket, const char* name)
++list_interface_adress(int socket, const address_family *family,
++	uint32 flags, ifreq *request)
+ {
++	if (ioctl(socket, SIOCGIFADDR, request, sizeof(struct ifreq)) < 0)
++		return;
++
++	printf("\t%s addr: ", family->name);
++	family->print_address(&request->ifr_addr);
++
++	if ((flags & IFF_BROADCAST) != 0
++		&& ioctl(socket, SIOCGIFBRDADDR, request, sizeof(struct ifreq)) == 0
++		&& request->ifr_broadaddr.sa_family == family->family) {
++		printf(", Bcast: ");
++		family->print_address(&request->ifr_broadaddr);
++	}
++	if (ioctl(socket, SIOCGIFNETMASK, request, sizeof(struct ifreq)) == 0
++		&& request->ifr_mask.sa_family == family->family) {
++		switch (family->preferred_format) {
++		case PREFER_OUTPUT_MASK:
++			printf(", Mask: ");
++			family->print_address(&request->ifr_mask);
++			break;
++		case PREFER_OUTPUT_PREFIX_LENGTH:
++			printf(", Prefix Length: %u",
++				family->mask_to_prefix_length(&request->ifr_mask));
++			break;
++		}
++	}
++	putchar('\n');
++}
++
++
++bool
++list_interface(const char* name)
++{
+ 	ifreq request;
+ 	if (!prepare_request(request, name))
+-		return;
++		return true;
+ 
+-	if (ioctl(socket, SIOCGIFINDEX, &request, sizeof(request)) < 0) {
++	int socket = -1;
++	for (int32 i = 0; kFamilies[i].family >= 0; i++) {
++		socket = sAddressFamilySockets[i];
++
++		if (ioctl(socket, SIOCGIFINDEX, &request, sizeof(request)) >= 0)
++			break;
++	}
++
++	if (socket == -1) {
+ 		fprintf(stderr, "%s: Interface \"%s\" does not exist.\n", kProgramName,
+ 			name);
+-		return;
++		return false;
+ 	}
+ 
+ 	printf("%s", name);
+@@ -348,29 +589,11 @@
+ 		flags = request.ifr_flags;
+ 
+ 	for (int32 i = 0; kFamilies[i].family >= 0; i++) {
+-		int familySocket = ::socket(kFamilies[i].family, SOCK_DGRAM, 0);
+-		if (familySocket < 0)
+-			continue;
+-
+-		if (ioctl(familySocket, SIOCGIFADDR, &request, sizeof(struct ifreq)) == 0) {
+-			printf("\t%s addr: ", kFamilies[i].name);
+-			kFamilies[i].print_address(&request.ifr_addr);
+-
+-			if ((flags & IFF_BROADCAST) != 0
+-				&& ioctl(familySocket, SIOCGIFBRDADDR, &request, sizeof(struct ifreq)) == 0
+-				&& request.ifr_broadaddr.sa_family == kFamilies[i].family) {
+-				printf(", Bcast: ");
+-				kFamilies[i].print_address(&request.ifr_broadaddr);
+-			}
+-			if (ioctl(familySocket, SIOCGIFNETMASK, &request, sizeof(struct ifreq)) == 0
+-				&& request.ifr_mask.sa_family == kFamilies[i].family) {
+-				printf(", Mask: ");
+-				kFamilies[i].print_address(&request.ifr_mask);
+-			}
+-			putchar('\n');
++		int familySocket = sAddressFamilySockets[i];
++		if (familySocket != -1) {
++			list_interface_adress(familySocket, &kFamilies[i],
++				flags, &request);
+ 		}
+-
+-		close(familySocket);
+ 	}
+ 
+ 	// Print MTU, metric, flags
+@@ -434,19 +657,22 @@
+ 	}
+ 
+ 	putchar('\n');
++        return true;
+ }
+ 
+ 
+ void
+-list_interfaces(int socket, const char* name)
++list_interfaces(const char* name)
+ {
+ 	if (name != NULL) {
+-		list_interface(socket, name);
++		list_interface(name);
+ 		return;
+ 	}
+ 
+ 	// get a list of all interfaces
+ 
++	int socket = sAddressFamilySockets[0]; // TODO: this does not look good
++
+ 	ifconf config;
+ 	config.ifc_len = sizeof(config.ifc_value);
+ 	if (ioctl(socket, SIOCGIFCOUNT, &config, sizeof(struct ifconf)) < 0)
+@@ -472,7 +698,7 @@
+ 	ifreq *interface = (ifreq *)buffer;
+ 
+ 	for (uint32 i = 0; i < count; i++) {
+-		list_interface(socket, interface->ifr_name);
++		list_interface(interface->ifr_name);
+ 
+ 		interface = (ifreq *)((addr_t)interface + IF_NAMESIZE + interface->ifr_addr.sa_len);
+ 	}
+@@ -482,27 +708,47 @@
+ 
+ 
+ void
+-delete_interface(int socket, const char* name)
++delete_interface(const char* name)
+ {
+ 	ifreq request;
+ 	if (!prepare_request(request, name))
+ 		return;
+ 
+-	if (ioctl(socket, SIOCDIFADDR, &request, sizeof(request)) < 0) {
+-		fprintf(stderr, "%s: Could not delete interface %s: %s\n",
+-			kProgramName, name, strerror(errno));
++	for (int32 i = 0; kFamilies[i].family >= 0; i++) {
++		int socket = sAddressFamilySockets[i];
++		if (socket < 0)
++			continue;
++
++		if (ioctl(socket, SIOCDIFADDR, &request, sizeof(request)) < 0) {
++			fprintf(stderr, "%s: Could not delete interface %s: %s\n",
++				kProgramName, name, strerror(errno));
++		}
+ 	}
+ }
+ 
+ 
+ void
+-configure_interface(int socket, const char* name, char* const* args,
++configure_interface(const char* name, char* const* args,
+ 	int32 argCount)
+ {
+ 	ifreq request;
+ 	if (!prepare_request(request, name))
+ 		return;
+ 
++	// try to parse address family
++
++	int32 familyIndex;
++	int32 i = 0;
++	if (get_address_family(args[i], familyIndex))
++		i++;
++
++	int socket = sAddressFamilySockets[familyIndex];
++	if (socket < 0) {
++		fprintf(stderr, "%s: Address family \"%s\" is not available.\n",
++			kProgramName, kFamilies[familyIndex].name);
++		exit(1);
++	}
++
+ 	uint32 index = 0;
+ 	if (ioctl(socket, SIOCGIFINDEX, &request, sizeof(request)) >= 0)
+ 		index = request.ifr_index;
+@@ -513,25 +759,6 @@
+ 	int mtu = -1, metric = -1, media = -1;
+ 	int addFlags = 0, currentFlags = 0, removeFlags = 0;
+ 
+-	// try to parse address family
+-
+-	int32 familyIndex;
+-	int32 i = 0;
+-	if (get_address_family(args[i], familyIndex))
+-		i++;
+-
+-	if (kFamilies[familyIndex].family != AF_INET) {
+-		close(socket);
+-
+-		// replace socket with one of the correct address family
+-		socket = ::socket(kFamilies[familyIndex].family, SOCK_DGRAM, 0);
+-		if (socket < 0) {
+-			fprintf(stderr, "%s: Address family \"%s\" is not available.\n",
+-				kProgramName, kFamilies[familyIndex].name);
+-			exit(1);
+-		}
+-	}
+-
+ 	if (index == 0) {
+ 		// the interface does not exist yet, we have to add it first
+ 		request.ifr_parameter.base_name[0] = '\0';
+@@ -571,7 +798,7 @@
+ 			i++;
+ 		} else if (!strcmp(args[i], "nm") || !strcmp(args[i], "netmask")) {
+ 			if (hasMask) {
+-				fprintf(stderr, "%s: Netmask is specified twice\n",
++				fprintf(stderr, "%s: Netmask or prefix length is specified twice\n",
+ 					kProgramName);
+ 				exit(1);
+ 			}
+@@ -582,6 +809,20 @@
+ 			}
+ 			hasMask = true;
+ 			i++;
++		} else if (!strcmp(args[i], "prefixlen") 
++				|| !strcmp(args[i], "plen")) {
++			if (hasMask) {
++				fprintf(stderr, "%s: Netmask or prefix length is specified twice\n",
++					kProgramName);
++				exit(1);
++			}
++			if (!prefix_length_to_mask(familyIndex, args[i + 1], mask)) {
++				fprintf(stderr, "%s: Option 'prefixlen' is invalid for this "
++					"address family\n", kProgramName);
++				exit(1);
++			}
++			hasMask = true;
++			i++;
+ 		} else if (!strcmp(args[i], "bc") || !strcmp(args[i], "broadcast")) {
+ 			if (hasBroadcast) {
+ 				fprintf(stderr, "%s: broadcast address is specified twice\n",
+@@ -761,6 +1002,7 @@
+ 		BMessage message(kMsgConfigureInterface);
+ 		message.AddString("device", name);
+ 		BMessage address;
++		// TODO: this is not working for ipv6 yet
+ 		address.AddString("family", "inet");
+ 		address.AddBool("auto_config", true);
+ 		message.AddMessage("address", &address);
+@@ -807,9 +1049,7 @@
+ 		deleteInterfaces = true;
+ 	}
+ 
+-	// we need a socket to talk to the networking stack
+-	int socket = ::socket(AF_INET, SOCK_DGRAM, 0);
+-	if (socket < 0) {
++	if (initialize_address_families() == false) {
+ 		fprintf(stderr, "%s: The networking stack doesn't seem to be "
+ 			"available.\n", kProgramName);
+ 		return 1;
+@@ -817,7 +1057,7 @@
+ 
+ 	if (deleteInterfaces) {
+ 		for (int i = 2; i < argc; i++) {
+-			delete_interface(socket, argv[i]);
++			delete_interface(argv[i]);
+ 		}
+ 		return 0;
+ 	} else if (argc > 1 && !strcmp(argv[1], "-a")) {
+@@ -825,7 +1065,7 @@
+ 		if (argc > 2)
+ 			usage(1);
+ 
+-		list_interfaces(socket, NULL);
++		list_interfaces(NULL);
+ 		return 0;
+ 	}
+ 
+@@ -833,13 +1073,13 @@
+ 	if (argc > 2) {
+ 		// add or configure an interface
+ 
+-		configure_interface(socket, name, argv + 2, argc - 2);
++		configure_interface(name, argv + 2, argc - 2);
+ 		return 0;
+ 	}
+ 
+ 	// list interfaces
+ 
+-	list_interfaces(socket, name);
++	list_interfaces(name);
+ 	return 0;
+ }
+ 
+Index: src/bin/network/route/route.cpp
+===================================================================
+--- src/bin/network/route/route.cpp	(revision 37397)
++++ src/bin/network/route/route.cpp	(working copy)
+@@ -44,22 +44,43 @@
+ 	const char*	name;
+ 	const char*	identifiers[4];
+ 	bool		(*parse_address)(const char* string, sockaddr* _address);
++	bool		(*prefix_length_to_mask)(uint8 prefixLength, sockaddr* mask);
++	uint8		(*mask_to_prefix_length)(sockaddr* mask);
+ 	const char*	(*address_to_string)(sockaddr* address);
+ };
+ 
+ // AF_INET family
+ static bool inet_parse_address(const char* string, sockaddr* address);
++static bool inet_prefix_length_to_mask(uint8 prefixLength, sockaddr* mask);
++static uint8 inet_mask_to_prefix_length(sockaddr* mask);
+ static const char* inet_address_to_string(sockaddr* address);
+ 
++// AF_INET6 family
++static bool inet6_parse_address(const char* string, sockaddr* address);
++static bool inet6_prefix_length_to_mask(uint8 prefixLength, sockaddr* mask);
++static uint8 inet6_mask_to_prefix_length(sockaddr* mask);
++static const char* inet6_address_to_string(sockaddr* address);
++
+ static const address_family kFamilies[] = {
+ 	{
+ 		AF_INET,
+ 		"inet",
+ 		{"AF_INET", "inet", "ipv4", NULL},
+ 		inet_parse_address,
++		inet_prefix_length_to_mask,
++		inet_mask_to_prefix_length,
+ 		inet_address_to_string,
+ 	},
+-	{ -1, NULL, {NULL}, NULL, NULL }
++	{
++		AF_INET6,
++		"inet6",
++		{"AF_INET6", "inet6", "ipv6", NULL},
++		inet6_parse_address,
++		inet6_prefix_length_to_mask,
++		inet6_mask_to_prefix_length,
++		inet6_address_to_string,
++	},
++	{ -1, NULL, {NULL}, NULL, NULL, NULL, NULL }
+ };
+ 
+ 
+@@ -82,6 +103,46 @@
+ }
+ 
+ 
++static bool
++inet_prefix_length_to_mask(uint8 prefixLength, sockaddr* _mask)
++{
++	if (prefixLength > 32)
++		return false;
++
++	sockaddr_in& mask = *(sockaddr_in *)_mask;
++	mask.sin_family = AF_INET;
++        mask.sin_len = sizeof(sockaddr_in);
++	mask.sin_port = 0;
++	memset(&mask.sin_zero[0], 0, sizeof(mask.sin_zero));
++
++	uint32 u32mask = 0;
++	for (uint8 i = 0; i < prefixLength; ++i)
++		u32mask |= 1 << (i - 1);
++	mask.sin_addr.s_addr = htonl(u32mask);
++
++	return true;
++}
++
++
++static uint8
++inet_mask_to_prefix_length(sockaddr* _mask)
++{
++	sockaddr_in& mask = *(sockaddr_in *)_mask;
++	if (mask.sin_family != AF_INET)
++	    return (uint8)-1;
++
++	uint8 result = 0;
++	uint32 u32mask = ntohl(mask.sin_addr.s_addr);
++	for (uint8 i = 0; i < 32; ++i) {
++		if (!(u32mask & (1 << i)))
++			break;
++		result++;
++	}
++
++	return result;
++}
++
++
+ static const char *
+ inet_address_to_string(sockaddr* address)
+ {
+@@ -92,6 +153,89 @@
+ }
+ 
+ 
++static bool
++inet6_parse_address(const char* string, sockaddr* _address)
++{
++	sockaddr_in6& address = *(sockaddr_in6 *)_address;
++
++	if (inet_pton(AF_INET6, string, &address.sin6_addr) != 1)
++		return false;
++
++	address.sin6_family = AF_INET6;
++	address.sin6_len = sizeof(sockaddr_in6);
++	address.sin6_port = 0;
++	address.sin6_flowinfo = 0;
++	address.sin6_scope_id = 0;
++
++	return true;
++}
++
++
++static bool
++inet6_prefix_length_to_mask(uint8 prefixLength, sockaddr* _mask)
++{
++	if (prefixLength > 128)
++		return false;
++
++	sockaddr_in6& mask = *(sockaddr_in6 *)_mask;
++	mask.sin6_family = AF_INET6;
++	mask.sin6_len = sizeof(sockaddr_in6);
++	mask.sin6_port = 0;
++	mask.sin6_flowinfo = 0;
++	mask.sin6_scope_id = 0;
++	memset(mask.sin6_addr.s6_addr, 0, sizeof(in6_addr));
++
++	for (uint8 i = 0; i < sizeof(in6_addr); i++, prefixLength -= 8) {
++		if (prefixLength < 8) {
++			const uint8 masks[] = {
++				0x00, 0x80, 0xc0, 0xe0,
++				0xf0, 0xf8, 0xfc, 0xfe
++			};
++			mask.sin6_addr.s6_addr[i] = masks[prefixLength];
++			break;
++		}
++
++		mask.sin6_addr.s6_addr[i] = 0xff;
++	}
++
++	return true;
++}
++
++
++static uint8
++inet6_mask_to_prefix_length(sockaddr* _mask)
++{
++	sockaddr_in6& mask = *(sockaddr_in6 *)_mask;
++	if (mask.sin6_family != AF_INET6)
++	    return (uint8)-1;
++
++	uint8 result = 0;
++	for (uint8 i = 0; i < sizeof(in6_addr); i++) {
++		for (uint8 j = 0; j < 8; j++) {
++			if (!(mask.sin6_addr.s6_addr[i] & (1 << j)))
++				return result;
++			result++;
++		}
++	}
++
++	return 128;
++}
++
++
++static const char*
++inet6_address_to_string(sockaddr* address)
++{
++	if (address == NULL || address->sa_family != AF_INET6)
++		return "-";
++
++	static char buffer[INET6_ADDRSTRLEN];
++
++	inet_ntop(AF_INET6, &((sockaddr_in6 *)address)->sin6_addr,
++		buffer, sizeof(buffer));
++
++	return buffer;
++}
++
+ //	#pragma mark -
+ 
+ 
+@@ -100,13 +244,14 @@
+ {
+ 	printf("usage: %s [command] [<interface>] [<address family>] <address|default> [<option/flags>...]\n"
+ 		"Where <command> can be the one of:\n"
+-		"  add             - add a route for the specified interface\n"
+-		"  delete          - deletes the specified route\n"
+-		"  list            - list with filters [default]\n"
++		"  add                - add a route for the specified interface\n"
++		"  delete             - deletes the specified route\n"
++		"  list               - list with filters [default]\n"
+ 		"<option> can be the following:\n"
+-		"  netmask <addr>  - networking subnet mask\n"
+-		"  gw <addr>       - gateway address\n"
+-		"  mtu <bytes>     - maximal transfer unit\n"
++		"  netmask <addr>     - networking subnet mask\n"
++		"  prefixlen <number> - subnet mask length in bits\n"
++		"  gw <addr>          - gateway address\n"
++		"  mtu <bytes>        - maximal transfer unit\n"
+ 		"And <flags> can be: reject, local, host\n\n"
+ 		"Example:\n"
+ 		"\t%s add /dev/net/ipro1000/0 default gw 192.168.0.254\n",
+@@ -158,6 +303,23 @@
+ }
+ 
+ 
++bool
++prefix_length_to_mask(int32 familyIndex, const char* argument,
++	struct sockaddr_storage& mask)
++{
++	if (argument == NULL)
++		return false;
++
++	char *end;
++	uint32 prefixLength = strtoul(argument, &end, 10);
++	if (end == argument)
++		return false;
++
++	return kFamilies[familyIndex].prefix_length_to_mask(
++		(uint8)prefixLength, (sockaddr *)&mask);
++}
++
++
+ //	#pragma mark -
+ 
+ 
+@@ -173,6 +335,7 @@
+ 
+ 	uint32 size = (uint32)config.ifc_value;
+ 	if (size == 0) {
++//TODO: do not print this for each AF
+ 		fprintf(stderr, "%s: There are no routes!\n", kProgramName);
+ 		return;
+ 	}
+@@ -386,7 +549,8 @@
+ 
+ 	while (i < argc && i < 5) {
+ 		// try to parse address family
+-		if (i <= 3 && familyIndex == -1 && get_address_family(argv[i], familyIndex)) {
++		if (i <= 3 && familySpecified == false
++				&& get_address_family(argv[i], familyIndex)) {
+ 			familySpecified = true;
+ 			if (i == 2)
+ 				interfaceIndex = -1;
+@@ -443,6 +607,19 @@
+ 			}
+ 			hasMask = true;
+ 			i++;
++		} else if (!strcmp(argv[i], "plen") || !strcmp(argv[i], "prefixel")) {
++			if (hasMask) {
++				fprintf(stderr, "%s: Netmask is specified twice\n",
++					kProgramName);
++				exit(1);
++			}
++			if (!prefix_length_to_mask(familyIndex, argv[i + 1], mask)) {
++				fprintf(stderr, "%s: Option 'prefixlen' is invalid for this "
++					"address family\n", kProgramName);
++				exit(1);
++			}
++			hasMask = true;
++			i++;
+ 		} else if (!strcmp(argv[i], "mtu")) {
+ 			route.mtu = argv[i + 1] ? strtol(argv[i + 1], NULL, 0) : 0;
+ 			if (route.mtu <= 500) {
+@@ -505,7 +682,7 @@
+ 				list_routes(socket, interface, route);
+ 			else {
+ 				for (int32 i = 0; kFamilies[i].family >= 0; i++) {
+-					int socket = ::socket(kFamilies[familyIndex].family, SOCK_DGRAM, 0);
++					int socket = ::socket(kFamilies[i].family, SOCK_DGRAM, 0);
+ 					if (socket < 0)
+ 						continue;
+ 
+Index: data/etc/profile
+===================================================================
+--- data/etc/profile	(revision 37397)
++++ data/etc/profile	(working copy)
+@@ -103,3 +103,4 @@
+     . /etc/bash_completion
+ fi
+ 
++alias dmesg='tail -f /var/log/syslog'
+\ No newline at end of file
+Index: headers/posix/netinet/ip6.h
+===================================================================
+--- headers/posix/netinet/ip6.h	(revision 0)
++++ headers/posix/netinet/ip6.h	(revision 0)
+@@ -0,0 +1,706 @@
++/*	$FreeBSD: src/sys/netinet/ip6.h,v 1.15 2005/07/20 10:30:52 ume Exp $	*/
++/*	$KAME: ip6.h,v 1.18 2001/03/29 05:34:30 itojun Exp $	*/
++
++/*-
++ * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the project nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*-
++ * Copyright (c) 1982, 1986, 1993
++ *	The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 4. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ *	@(#)ip.h	8.1 (Berkeley) 6/10/93
++ */
++#ifndef _NETINET_IP6_H_
++#define _NETINET_IP6_H_
++
++#define __packed __attribute__((packed))
++
++
++/*
++ * Definition for internet protocol version 6.
++ * RFC 2460
++ */
++
++struct ip6_hdr {
++	union {
++		struct ip6_hdrctl {
++			u_int32_t ip6_un1_flow;	/* 20 bits of flow-ID */
++			u_int16_t ip6_un1_plen;	/* payload length */
++			u_int8_t  ip6_un1_nxt;	/* next header */
++			u_int8_t  ip6_un1_hlim;	/* hop limit */
++		} ip6_un1;
++		u_int8_t ip6_un2_vfc;	/* 4 bits version, top 4 bits class */
++	} ip6_ctlun;
++	struct in6_addr ip6_src;	/* source address */
++	struct in6_addr ip6_dst;	/* destination address */
++} __packed;
++
++#define ip6_vfc		ip6_ctlun.ip6_un2_vfc
++#define ip6_flow	ip6_ctlun.ip6_un1.ip6_un1_flow
++#define ip6_plen	ip6_ctlun.ip6_un1.ip6_un1_plen
++#define ip6_nxt		ip6_ctlun.ip6_un1.ip6_un1_nxt
++#define ip6_hlim	ip6_ctlun.ip6_un1.ip6_un1_hlim
++#define ip6_hops	ip6_ctlun.ip6_un1.ip6_un1_hlim
++
++#define IPV6_VERSION		0x60
++#define IPV6_VERSION_MASK	0xf0
++
++#if BYTE_ORDER == BIG_ENDIAN
++#define IPV6_FLOWINFO_MASK	0x0fffffff	/* flow info (28 bits) */
++#define IPV6_FLOWLABEL_MASK	0x000fffff	/* flow label (20 bits) */
++#else
++#if BYTE_ORDER == LITTLE_ENDIAN
++#define IPV6_FLOWINFO_MASK	0xffffff0f	/* flow info (28 bits) */
++#define IPV6_FLOWLABEL_MASK	0xffff0f00	/* flow label (20 bits) */
++#endif /* LITTLE_ENDIAN */
++#endif
++#if 1
++/* ECN bits proposed by Sally Floyd */
++#define IP6TOS_CE		0x01	/* congestion experienced */
++#define IP6TOS_ECT		0x02	/* ECN-capable transport */
++#endif
++
++/*
++ * Extension Headers
++ */
++
++struct	ip6_ext {
++	u_int8_t ip6e_nxt;
++	u_int8_t ip6e_len;
++} __packed;
++
++/* Hop-by-Hop options header */
++/* XXX should we pad it to force alignment on an 8-byte boundary? */
++struct ip6_hbh {
++	u_int8_t ip6h_nxt;	/* next header */
++	u_int8_t ip6h_len;	/* length in units of 8 octets */
++	/* followed by options */
++} __packed;
++
++/* Destination options header */
++/* XXX should we pad it to force alignment on an 8-byte boundary? */
++struct ip6_dest {
++	u_int8_t ip6d_nxt;	/* next header */
++	u_int8_t ip6d_len;	/* length in units of 8 octets */
++	/* followed by options */
++} __packed;
++
++/* Option types and related macros */
++#define IP6OPT_PAD1		0x00	/* 00 0 00000 */
++#define IP6OPT_PADN		0x01	/* 00 0 00001 */
++#define IP6OPT_JUMBO		0xC2	/* 11 0 00010 = 194 */
++#define IP6OPT_NSAP_ADDR	0xC3	/* 11 0 00011 */
++#define IP6OPT_TUNNEL_LIMIT	0x04	/* 00 0 00100 */
++#ifndef _KERNEL
++#define IP6OPT_RTALERT		0x05	/* 00 0 00101 (KAME definition) */
++#endif
++#define IP6OPT_ROUTER_ALERT	0x05	/* 00 0 00101 (RFC3542, recommended) */
++
++#define IP6OPT_RTALERT_LEN	4
++#define IP6OPT_RTALERT_MLD	0	/* Datagram contains an MLD message */
++#define IP6OPT_RTALERT_RSVP	1	/* Datagram contains an RSVP message */
++#define IP6OPT_RTALERT_ACTNET	2 	/* contains an Active Networks msg */
++#define IP6OPT_MINLEN		2
++
++#define IP6OPT_EID		0x8a	/* 10 0 01010 */
++
++#define IP6OPT_TYPE(o)		((o) & 0xC0)
++#define IP6OPT_TYPE_SKIP	0x00
++#define IP6OPT_TYPE_DISCARD	0x40
++#define IP6OPT_TYPE_FORCEICMP	0x80
++#define IP6OPT_TYPE_ICMP	0xC0
++
++#define IP6OPT_MUTABLE		0x20
++
++/* IPv6 options: common part */
++struct ip6_opt {
++	u_int8_t ip6o_type;
++	u_int8_t ip6o_len;
++} __packed;
++
++/* Jumbo Payload Option */
++struct ip6_opt_jumbo {
++	u_int8_t ip6oj_type;
++	u_int8_t ip6oj_len;
++	u_int8_t ip6oj_jumbo_len[4];
++} __packed;
++#define IP6OPT_JUMBO_LEN	6
++
++/* NSAP Address Option */
++struct ip6_opt_nsap {
++	u_int8_t ip6on_type;
++	u_int8_t ip6on_len;
++	u_int8_t ip6on_src_nsap_len;
++	u_int8_t ip6on_dst_nsap_len;
++	/* followed by source NSAP */
++	/* followed by destination NSAP */
++} __packed;
++
++/* Tunnel Limit Option */
++struct ip6_opt_tunnel {
++	u_int8_t ip6ot_type;
++	u_int8_t ip6ot_len;
++	u_int8_t ip6ot_encap_limit;
++} __packed;
++
++/* Router Alert Option */
++struct ip6_opt_router {
++	u_int8_t ip6or_type;
++	u_int8_t ip6or_len;
++	u_int8_t ip6or_value[2];
++} __packed;
++/* Router alert values (in network byte order) */
++#if BYTE_ORDER == BIG_ENDIAN
++#define IP6_ALERT_MLD	0x0000
++#define IP6_ALERT_RSVP	0x0001
++#define IP6_ALERT_AN	0x0002
++#else
++#if BYTE_ORDER == LITTLE_ENDIAN
++#define IP6_ALERT_MLD	0x0000
++#define IP6_ALERT_RSVP	0x0100
++#define IP6_ALERT_AN	0x0200
++#endif /* LITTLE_ENDIAN */
++#endif
++
++/* Routing header */
++struct ip6_rthdr {
++	u_int8_t  ip6r_nxt;	/* next header */
++	u_int8_t  ip6r_len;	/* length in units of 8 octets */
++	u_int8_t  ip6r_type;	/* routing type */
++	u_int8_t  ip6r_segleft;	/* segments left */
++	/* followed by routing type specific data */
++} __packed;
++
++/* Type 0 Routing header */
++struct ip6_rthdr0 {
++	u_int8_t  ip6r0_nxt;		/* next header */
++	u_int8_t  ip6r0_len;		/* length in units of 8 octets */
++	u_int8_t  ip6r0_type;		/* always zero */
++	u_int8_t  ip6r0_segleft;	/* segments left */
++	u_int32_t  ip6r0_reserved;	/* reserved field */
++	/* followed by up to 127 struct in6_addr */
++} __packed;
++
++/* Fragment header */
++struct ip6_frag {
++	u_int8_t  ip6f_nxt;		/* next header */
++	u_int8_t  ip6f_reserved;	/* reserved field */
++	u_int16_t ip6f_offlg;		/* offset, reserved, and flag */
++	u_int32_t ip6f_ident;		/* identification */
++} __packed;
++
++#if BYTE_ORDER == BIG_ENDIAN
++#define IP6F_OFF_MASK		0xfff8	/* mask out offset from _offlg */
++#define IP6F_RESERVED_MASK	0x0006	/* reserved bits in ip6f_offlg */
++#define IP6F_MORE_FRAG		0x0001	/* more-fragments flag */
++#else /* BYTE_ORDER == LITTLE_ENDIAN */
++#define IP6F_OFF_MASK		0xf8ff	/* mask out offset from _offlg */
++#define IP6F_RESERVED_MASK	0x0600	/* reserved bits in ip6f_offlg */
++#define IP6F_MORE_FRAG		0x0100	/* more-fragments flag */
++#endif /* BYTE_ORDER == LITTLE_ENDIAN */
++
++/*
++ * Internet implementation parameters.
++ */
++#define IPV6_MAXHLIM	255	/* maximum hoplimit */
++#define IPV6_DEFHLIM	64	/* default hlim */
++#define IPV6_FRAGTTL	120	/* ttl for fragment packets, in slowtimo tick */
++#define IPV6_HLIMDEC	1	/* subtracted when forwarding */
++
++#define IPV6_MMTU	1280	/* minimal MTU and reassembly. 1024 + 256 */
++#define IPV6_MAXPACKET	65535	/* ip6 max packet size without Jumbo payload*/
++#define IPV6_MAXOPTHDR	2048	/* max option header size, 256 64-bit words */
++
++#ifdef _KERNEL
++/*
++ * IP6_EXTHDR_CHECK ensures that region between the IP6 header and the
++ * target header (including IPv6 itself, extension headers and
++ * TCP/UDP/ICMP6 headers) are continuous. KAME requires drivers
++ * to store incoming data into one internal mbuf or one or more external
++ * mbufs(never into two or more internal mbufs). Thus, the third case is
++ * supposed to never be matched but is prepared just in case.
++ */
++
++#define IP6_EXTHDR_CHECK(m, off, hlen, ret)				\
++do {									\
++    if ((m)->m_next != NULL) {						\
++	if (((m)->m_flags & M_LOOP) &&					\
++	    ((m)->m_len < (off) + (hlen)) &&				\
++	    (((m) = m_pullup((m), (off) + (hlen))) == NULL)) {		\
++		ip6stat.ip6s_exthdrtoolong++;				\
++		return ret;						\
++	} else if ((m)->m_flags & M_EXT) {				\
++		if ((m)->m_len < (off) + (hlen)) {			\
++			ip6stat.ip6s_exthdrtoolong++;			\
++			m_freem(m);					\
++			return ret;					\
++		}							\
++	} else {							\
++		if ((m)->m_len < (off) + (hlen)) {			\
++			ip6stat.ip6s_exthdrtoolong++;			\
++			m_freem(m);					\
++			return ret;					\
++		}							\
++	}								\
++    } else {								\
++	if ((m)->m_len < (off) + (hlen)) {				\
++		ip6stat.ip6s_tooshort++;				\
++		in6_ifstat_inc(m->m_pkthdr.rcvif, ifs6_in_truncated);	\
++		m_freem(m);						\
++		return ret;						\
++	}								\
++    }									\
++} while (/*CONSTCOND*/ 0)
++
++/*
++ * IP6_EXTHDR_GET ensures that intermediate protocol header (from "off" to
++ * "len") is located in single mbuf, on contiguous memory region.
++ * The pointer to the region will be returned to pointer variable "val",
++ * with type "typ".
++ * IP6_EXTHDR_GET0 does the same, except that it aligns the structure at the
++ * very top of mbuf.  GET0 is likely to make memory copy than GET.
++ *
++ * XXX we're now testing this, needs m_pulldown()
++ */
++#define IP6_EXTHDR_GET(val, typ, m, off, len) \
++do {									\
++	struct mbuf *t;							\
++	int tmp;							\
++	if ((m)->m_len >= (off) + (len))				\
++		(val) = (typ)(mtod((m), caddr_t) + (off));		\
++	else {								\
++		t = m_pulldown((m), (off), (len), &tmp);		\
++		if (t) {						\
++			if (t->m_len < tmp + (len))			\
++				panic("m_pulldown malfunction");	\
++			(val) = (typ)(mtod(t, caddr_t) + tmp);		\
++		} else {						\
++			(val) = (typ)NULL;				\
++			(m) = NULL;					\
++		}							\
++	}								\
++} while (/*CONSTCOND*/ 0)
++
++#define IP6_EXTHDR_GET0(val, typ, m, off, len) \
++do {									\
++	struct mbuf *t;							\
++	if ((off) == 0)							\
++		(val) = (typ)mtod(m, caddr_t);				\
++	else {								\
++		t = m_pulldown((m), (off), (len), NULL);		\
++		if (t) {						\
++			if (t->m_len < (len))				\
++				panic("m_pulldown malfunction");	\
++			(val) = (typ)mtod(t, caddr_t);			\
++		} else {						\
++			(val) = (typ)NULL;				\
++			(m) = NULL;					\
++		}							\
++	}								\
++} while (/*CONSTCOND*/ 0)
++#endif /*_KERNEL*/
++
++#endif /* not _NETINET_IP6_H_ */
++/*	$FreeBSD: src/sys/netinet/ip6.h,v 1.15 2005/07/20 10:30:52 ume Exp $	*/
++/*	$KAME: ip6.h,v 1.18 2001/03/29 05:34:30 itojun Exp $	*/
++
++/*-
++ * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. Neither the name of the project nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*-
++ * Copyright (c) 1982, 1986, 1993
++ *	The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 4. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ *	@(#)ip.h	8.1 (Berkeley) 6/10/93
++ */
++#ifndef _NETINET_IP6_H_
++#define _NETINET_IP6_H_
++
++#define __packed __attribute__((packed))
++
++
++/*
++ * Definition for internet protocol version 6.
++ * RFC 2460
++ */
++
++struct ip6_hdr {
++	union {
++		struct ip6_hdrctl {
++			u_int32_t ip6_un1_flow;	/* 20 bits of flow-ID */
++			u_int16_t ip6_un1_plen;	/* payload length */
++			u_int8_t  ip6_un1_nxt;	/* next header */
++			u_int8_t  ip6_un1_hlim;	/* hop limit */
++		} ip6_un1;
++		u_int8_t ip6_un2_vfc;	/* 4 bits version, top 4 bits class */
++	} ip6_ctlun;
++	struct in6_addr ip6_src;	/* source address */
++	struct in6_addr ip6_dst;	/* destination address */
++} __packed;
++
++#define ip6_vfc		ip6_ctlun.ip6_un2_vfc
++#define ip6_flow	ip6_ctlun.ip6_un1.ip6_un1_flow
++#define ip6_plen	ip6_ctlun.ip6_un1.ip6_un1_plen
++#define ip6_nxt		ip6_ctlun.ip6_un1.ip6_un1_nxt
++#define ip6_hlim	ip6_ctlun.ip6_un1.ip6_un1_hlim
++#define ip6_hops	ip6_ctlun.ip6_un1.ip6_un1_hlim
++
++#define IPV6_VERSION		0x60
++#define IPV6_VERSION_MASK	0xf0
++
++#if BYTE_ORDER == BIG_ENDIAN
++#define IPV6_FLOWINFO_MASK	0x0fffffff	/* flow info (28 bits) */
++#define IPV6_FLOWLABEL_MASK	0x000fffff	/* flow label (20 bits) */
++#else
++#if BYTE_ORDER == LITTLE_ENDIAN
++#define IPV6_FLOWINFO_MASK	0xffffff0f	/* flow info (28 bits) */
++#define IPV6_FLOWLABEL_MASK	0xffff0f00	/* flow label (20 bits) */
++#endif /* LITTLE_ENDIAN */
++#endif
++#if 1
++/* ECN bits proposed by Sally Floyd */
++#define IP6TOS_CE		0x01	/* congestion experienced */
++#define IP6TOS_ECT		0x02	/* ECN-capable transport */
++#endif
++
++/*
++ * Extension Headers
++ */
++
++struct	ip6_ext {
++	u_int8_t ip6e_nxt;
++	u_int8_t ip6e_len;
++} __packed;
++
++/* Hop-by-Hop options header */
++/* XXX should we pad it to force alignment on an 8-byte boundary? */
++struct ip6_hbh {
++	u_int8_t ip6h_nxt;	/* next header */
++	u_int8_t ip6h_len;	/* length in units of 8 octets */
++	/* followed by options */
++} __packed;
++
++/* Destination options header */
++/* XXX should we pad it to force alignment on an 8-byte boundary? */
++struct ip6_dest {
++	u_int8_t ip6d_nxt;	/* next header */
++	u_int8_t ip6d_len;	/* length in units of 8 octets */
++	/* followed by options */
++} __packed;
++
++/* Option types and related macros */
++#define IP6OPT_PAD1		0x00	/* 00 0 00000 */
++#define IP6OPT_PADN		0x01	/* 00 0 00001 */
++#define IP6OPT_JUMBO		0xC2	/* 11 0 00010 = 194 */
++#define IP6OPT_NSAP_ADDR	0xC3	/* 11 0 00011 */
++#define IP6OPT_TUNNEL_LIMIT	0x04	/* 00 0 00100 */
++#ifndef _KERNEL
++#define IP6OPT_RTALERT		0x05	/* 00 0 00101 (KAME definition) */
++#endif
++#define IP6OPT_ROUTER_ALERT	0x05	/* 00 0 00101 (RFC3542, recommended) */
++
++#define IP6OPT_RTALERT_LEN	4
++#define IP6OPT_RTALERT_MLD	0	/* Datagram contains an MLD message */
++#define IP6OPT_RTALERT_RSVP	1	/* Datagram contains an RSVP message */
++#define IP6OPT_RTALERT_ACTNET	2 	/* contains an Active Networks msg */
++#define IP6OPT_MINLEN		2
++
++#define IP6OPT_EID		0x8a	/* 10 0 01010 */
++
++#define IP6OPT_TYPE(o)		((o) & 0xC0)
++#define IP6OPT_TYPE_SKIP	0x00
++#define IP6OPT_TYPE_DISCARD	0x40
++#define IP6OPT_TYPE_FORCEICMP	0x80
++#define IP6OPT_TYPE_ICMP	0xC0
++
++#define IP6OPT_MUTABLE		0x20
++
++/* IPv6 options: common part */
++struct ip6_opt {
++	u_int8_t ip6o_type;
++	u_int8_t ip6o_len;
++} __packed;
++
++/* Jumbo Payload Option */
++struct ip6_opt_jumbo {
++	u_int8_t ip6oj_type;
++	u_int8_t ip6oj_len;
++	u_int8_t ip6oj_jumbo_len[4];
++} __packed;
++#define IP6OPT_JUMBO_LEN	6
++
++/* NSAP Address Option */
++struct ip6_opt_nsap {
++	u_int8_t ip6on_type;
++	u_int8_t ip6on_len;
++	u_int8_t ip6on_src_nsap_len;
++	u_int8_t ip6on_dst_nsap_len;
++	/* followed by source NSAP */
++	/* followed by destination NSAP */
++} __packed;
++
++/* Tunnel Limit Option */
++struct ip6_opt_tunnel {
++	u_int8_t ip6ot_type;
++	u_int8_t ip6ot_len;
++	u_int8_t ip6ot_encap_limit;
++} __packed;
++
++/* Router Alert Option */
++struct ip6_opt_router {
++	u_int8_t ip6or_type;
++	u_int8_t ip6or_len;
++	u_int8_t ip6or_value[2];
++} __packed;
++/* Router alert values (in network byte order) */
++#if BYTE_ORDER == BIG_ENDIAN
++#define IP6_ALERT_MLD	0x0000
++#define IP6_ALERT_RSVP	0x0001
++#define IP6_ALERT_AN	0x0002
++#else
++#if BYTE_ORDER == LITTLE_ENDIAN
++#define IP6_ALERT_MLD	0x0000
++#define IP6_ALERT_RSVP	0x0100
++#define IP6_ALERT_AN	0x0200
++#endif /* LITTLE_ENDIAN */
++#endif
++
++/* Routing header */
++struct ip6_rthdr {
++	u_int8_t  ip6r_nxt;	/* next header */
++	u_int8_t  ip6r_len;	/* length in units of 8 octets */
++	u_int8_t  ip6r_type;	/* routing type */
++	u_int8_t  ip6r_segleft;	/* segments left */
++	/* followed by routing type specific data */
++} __packed;
++
++/* Type 0 Routing header */
++struct ip6_rthdr0 {
++	u_int8_t  ip6r0_nxt;		/* next header */
++	u_int8_t  ip6r0_len;		/* length in units of 8 octets */
++	u_int8_t  ip6r0_type;		/* always zero */
++	u_int8_t  ip6r0_segleft;	/* segments left */
++	u_int32_t  ip6r0_reserved;	/* reserved field */
++	/* followed by up to 127 struct in6_addr */
++} __packed;
++
++/* Fragment header */
++struct ip6_frag {
++	u_int8_t  ip6f_nxt;		/* next header */
++	u_int8_t  ip6f_reserved;	/* reserved field */
++	u_int16_t ip6f_offlg;		/* offset, reserved, and flag */
++	u_int32_t ip6f_ident;		/* identification */
++} __packed;
++
++#if BYTE_ORDER == BIG_ENDIAN
++#define IP6F_OFF_MASK		0xfff8	/* mask out offset from _offlg */
++#define IP6F_RESERVED_MASK	0x0006	/* reserved bits in ip6f_offlg */
++#define IP6F_MORE_FRAG		0x0001	/* more-fragments flag */
++#else /* BYTE_ORDER == LITTLE_ENDIAN */
++#define IP6F_OFF_MASK		0xf8ff	/* mask out offset from _offlg */
++#define IP6F_RESERVED_MASK	0x0600	/* reserved bits in ip6f_offlg */
++#define IP6F_MORE_FRAG		0x0100	/* more-fragments flag */
++#endif /* BYTE_ORDER == LITTLE_ENDIAN */
++
++/*
++ * Internet implementation parameters.
++ */
++#define IPV6_MAXHLIM	255	/* maximum hoplimit */
++#define IPV6_DEFHLIM	64	/* default hlim */
++#define IPV6_FRAGTTL	120	/* ttl for fragment packets, in slowtimo tick */
++#define IPV6_HLIMDEC	1	/* subtracted when forwarding */
++
++#define IPV6_MMTU	1280	/* minimal MTU and reassembly. 1024 + 256 */
++#define IPV6_MAXPACKET	65535	/* ip6 max packet size without Jumbo payload*/
++#define IPV6_MAXOPTHDR	2048	/* max option header size, 256 64-bit words */
++
++#ifdef _KERNEL
++/*
++ * IP6_EXTHDR_CHECK ensures that region between the IP6 header and the
++ * target header (including IPv6 itself, extension headers and
++ * TCP/UDP/ICMP6 headers) are continuous. KAME requires drivers
++ * to store incoming data into one internal mbuf or one or more external
++ * mbufs(never into two or more internal mbufs). Thus, the third case is
++ * supposed to never be matched but is prepared just in case.
++ */
++
++#define IP6_EXTHDR_CHECK(m, off, hlen, ret)				\
++do {									\
++    if ((m)->m_next != NULL) {						\
++	if (((m)->m_flags & M_LOOP) &&					\
++	    ((m)->m_len < (off) + (hlen)) &&				\
++	    (((m) = m_pullup((m), (off) + (hlen))) == NULL)) {		\
++		ip6stat.ip6s_exthdrtoolong++;				\
++		return ret;						\
++	} else if ((m)->m_flags & M_EXT) {				\
++		if ((m)->m_len < (off) + (hlen)) {			\
++			ip6stat.ip6s_exthdrtoolong++;			\
++			m_freem(m);					\
++			return ret;					\
++		}							\
++	} else {							\
++		if ((m)->m_len < (off) + (hlen)) {			\
++			ip6stat.ip6s_exthdrtoolong++;			\
++			m_freem(m);					\
++			return ret;					\
++		}							\
++	}								\
++    } else {								\
++	if ((m)->m_len < (off) + (hlen)) {				\
++		ip6stat.ip6s_tooshort++;				\
++		in6_ifstat_inc(m->m_pkthdr.rcvif, ifs6_in_truncated);	\
++		m_freem(m);						\
++		return ret;						\
++	}								\
++    }									\
++} while (/*CONSTCOND*/ 0)
++
++/*
++ * IP6_EXTHDR_GET ensures that intermediate protocol header (from "off" to
++ * "len") is located in single mbuf, on contiguous memory region.
++ * The pointer to the region will be returned to pointer variable "val",
++ * with type "typ".
++ * IP6_EXTHDR_GET0 does the same, except that it aligns the structure at the
++ * very top of mbuf.  GET0 is likely to make memory copy than GET.
++ *
++ * XXX we're now testing this, needs m_pulldown()
++ */
++#define IP6_EXTHDR_GET(val, typ, m, off, len) \
++do {									\
++	struct mbuf *t;							\
++	int tmp;							\
++	if ((m)->m_len >= (off) + (len))				\
++		(val) = (typ)(mtod((m), caddr_t) + (off));		\
++	else {								\
++		t = m_pulldown((m), (off), (len), &tmp);		\
++		if (t) {						\
++			if (t->m_len < tmp + (len))			\
++				panic("m_pulldown malfunction");	\
++			(val) = (typ)(mtod(t, caddr_t) + tmp);		\
++		} else {						\
++			(val) = (typ)NULL;				\
++			(m) = NULL;					\
++		}							\
++	}								\
++} while (/*CONSTCOND*/ 0)
++
++#define IP6_EXTHDR_GET0(val, typ, m, off, len) \
++do {									\
++	struct mbuf *t;							\
++	if ((off) == 0)							\
++		(val) = (typ)mtod(m, caddr_t);				\
++	else {								\
++		t = m_pulldown((m), (off), (len), NULL);		\
++		if (t) {						\
++			if (t->m_len < (len))				\
++				panic("m_pulldown malfunction");	\
++			(val) = (typ)mtod(t, caddr_t);			\
++		} else {						\
++			(val) = (typ)NULL;				\
++			(m) = NULL;					\
++		}							\
++	}								\
++} while (/*CONSTCOND*/ 0)
++#endif /*_KERNEL*/
++
++#endif /* not _NETINET_IP6_H_ */
+Index: headers/posix/netinet6/in6.h
+===================================================================
+--- headers/posix/netinet6/in6.h	(revision 37397)
++++ headers/posix/netinet6/in6.h	(working copy)
+@@ -108,4 +108,141 @@
+ #define INET6_ADDRSTRLEN				46
+ 
+ 
++// REVIEW:
++// the following is allmst compied from FreeBSD headers
++
++// #define _KERNEL // FIXME: the idea is that this all probably should not be visible in usersoace
++
++
++// /*
++//  * Options for use with [gs]etsockopt at the IPV6 level.
++//  * First word of comment is data type; bool is stored in int.
++//  */
++// /* no hdrincl */
++// #define IPV6_UNICAST_HOPS	4  /* int; IP6 hops */
++// #define IPV6_MULTICAST_IF	9  /* u_int; set/get IP6 multicast i/f  */
++// #define IPV6_MULTICAST_HOPS	10 /* int; set/get IP6 multicast hops */
++// #define IPV6_MULTICAST_LOOP	11 /* u_int; set/get IP6 multicast loopback */
++// #define IPV6_JOIN_GROUP		12 /* ip6_mreq; join a group membership */
++// #define IPV6_LEAVE_GROUP	13 /* ip6_mreq; leave a group membership */
++// #define IPV6_PORTRANGE		14 /* int; range to choose for unspec port */
++// #define ICMP6_FILTER		18 /* icmp6_filter; icmp6 filter */
++// /* RFC2292 options */
++// #ifdef _KERNEL
++// #define IPV6_2292PKTINFO	19 /* bool; send/recv if, src/dst addr */
++// #define IPV6_2292HOPLIMIT	20 /* bool; hop limit */
++// #define IPV6_2292NEXTHOP	21 /* bool; next hop addr */
++// #define IPV6_2292HOPOPTS	22 /* bool; hop-by-hop option */
++// #define IPV6_2292DSTOPTS	23 /* bool; destinaion option */
++// #define IPV6_2292RTHDR		24 /* bool; routing header */
++// #define IPV6_2292PKTOPTIONS	25 /* buf/cmsghdr; set/get IPv6 options */
++// #endif
++
++// #define IPV6_CHECKSUM		26 /* int; checksum offset for raw socket */
++// #define IPV6_V6ONLY		27 /* bool; make AF_INET6 sockets v6 only */
++// #ifndef _KERNEL
++// #define IPV6_BINDV6ONLY		IPV6_V6ONLY
++// #endif
++
++// #define IPV6_FAITH		29 /* bool; accept FAITH'ed connections */
++
++// /* new socket options introduced in RFC3542 */
++// #define IPV6_RTHDRDSTOPTS	35 /* ip6_dest; send dst option before rthdr */
++
++// #define IPV6_RECVPKTINFO	36 /* bool; recv if, dst addr */
++// #define IPV6_RECVHOPLIMIT	37 /* bool; recv hop limit */
++// #define IPV6_RECVRTHDR		38 /* bool; recv routing header */
++// #define IPV6_RECVHOPOPTS	39 /* bool; recv hop-by-hop option */
++// #define IPV6_RECVDSTOPTS	40 /* bool; recv dst option after rthdr */
++// #ifdef _KERNEL
++// #define IPV6_RECVRTHDRDSTOPTS	41 /* bool; recv dst option before rthdr */
++// #endif
++
++// #define IPV6_USE_MIN_MTU	42 /* bool; send packets at the minimum MTU */
++// #define IPV6_RECVPATHMTU	43 /* bool; notify an according MTU */
++
++// #define IPV6_PATHMTU		44 /* mtuinfo; get the current path MTU (sopt),
++// 				      4 bytes int; MTU notification (cmsg) */
++
++// /* more new socket options introduced in RFC3542 */
++// #define IPV6_PKTINFO		46 /* in6_pktinfo; send if, src addr */
++// #define IPV6_HOPLIMIT		47 /* int; send hop limit */
++// #define IPV6_NEXTHOP		48 /* sockaddr; next hop addr */
++// #define IPV6_HOPOPTS		49 /* ip6_hbh; send hop-by-hop option */
++// #define IPV6_DSTOPTS		50 /* ip6_dest; send dst option befor rthdr */
++// #define IPV6_RTHDR		51 /* ip6_rthdr; send routing header */
++
++// #define IPV6_RECVTCLASS		57 /* bool; recv traffic class values */
++
++// #define IPV6_AUTOFLOWLABEL	59 /* bool; attach flowlabel automagically */
++
++// #define IPV6_TCLASS		61 /* int; send traffic class value */
++// #define IPV6_DONTFRAG		62 /* bool; disable IPv6 fragmentation */
++
++// #define IPV6_PREFER_TEMPADDR	63 /* int; prefer temporary addresses as
++// 				    * the source address.
++// 				    */
++
++// #define	IPV6_BINDANY		64 /* bool: allow bind to any address */
++
++// /*
++//  * The following option is private; do not use it from user applications.
++//  * It is deliberately defined to the same value as IP_MSFILTER.
++//  */
++// #define	IPV6_MSFILTER		74 /* struct __msfilterreq;
++// 				    * set/get multicast source filter list.
++// 				    */
++
++/* to define items, should talk with KAME guys first, for *BSD compatibility */
++
++#define IPV6_RTHDR_LOOSE     0 /* this hop need not be a neighbor. XXX old spec */
++#define IPV6_RTHDR_STRICT    1 /* this hop must be a neighbor. XXX old spec */
++#define IPV6_RTHDR_TYPE_0    0 /* IPv6 routing header type 0 */
++
++/*
++ * Defaults and limits for options
++ */
++#define IPV6_DEFAULT_MULTICAST_HOPS 1	/* normally limit m'casts to 1 hop */
++#define IPV6_DEFAULT_MULTICAST_LOOP 1	/* normally hear sends if a member */
++
++/*
++ * The im6o_membership vector for each socket is now dynamically allocated at
++ * run-time, bounded by USHRT_MAX, and is reallocated when needed, sized
++ * according to a power-of-two increment.
++ */
++//#define	IPV6_MIN_MEMBERSHIPS	31
++//#define	IPV6_MAX_MEMBERSHIPS	4095
++
++/*
++ * Default resource limits for IPv6 multicast source filtering.
++ * These may be modified by sysctl.
++ */
++//#define	IPV6_MAX_GROUP_SRC_FILTER	512	/* sources per group */
++//#define	IPV6_MAX_SOCK_SRC_FILTER	128	/* sources per socket/group */
++
++// /*
++//  * Argument structure for IPV6_JOIN_GROUP and IPV6_LEAVE_GROUP.
++//  */
++// struct ipv6_mreq {
++// 	struct in6_addr	ipv6mr_multiaddr;
++// 	unsigned int	ipv6mr_interface;
++// };
++
++// /*
++//  * IPV6_PKTINFO: Packet information(RFC2292 sec 5)
++//  */
++// struct in6_pktinfo {
++// 	struct in6_addr	ipi6_addr;	/* src/dst IPv6 address */
++// 	unsigned int	ipi6_ifindex;	/* send/recv interface index */
++// };
++
++// /*
++//  * Control structure for IPV6_RECVPATHMTU socket option.
++//  */
++// struct ip6_mtuinfo {
++// 	struct sockaddr_in6 ip6m_addr;	/* or sockaddr_storage? */
++// 	uint32_t ip6m_mtu;
++// };
++
++
+ #endif	/* _NETINET6_IN6_H_ */
