@@ -1557,45 +1557,6 @@ Index: src/bin/network/route/route.cpp
  				0x00, 0x80, 0xc0, 0xe0,
  				0xf0, 0xf8, 0xfc, 0xfe
  			};
-Index: data/etc/profile
-===================================================================
---- data/etc/profile	(revision 37725)
-+++ data/etc/profile	(working copy)
-@@ -103,3 +103,34 @@
-     . /etc/bash_completion
- fi
- 
-+alias dmesg='tail -f /var/log/syslog'
-+
-+#
-+# IPv6 command quick demonstration.
-+# Note that for the last test to work, there should be 
-+# a host with address fc00::2 connected to the link.
-+# Ping from outside is also supprted but not shown here.
-+#
-+
-+ip6demo()
-+{
-+	# configure IPv6 address on loopback interface
-+#	ifconfig loop:0 inet6 ::1 up
-+
-+	# remove existing IPv4 interface
-+	ifconfig -d /dev/net/etherpci/0
-+
-+	# configure IPv6 address on ethernet interface
-+	ifconfig /dev/net/etherpci/0 inet6 2001::2 plen 64 up
-+
-+	# configure IPv6 default route
-+#	route add /dev/net/etherpci/0 inet6 :: plen 0 gateway 2001::1
-+
-+	# test ping to local address
-+#	ping6 -c 3 ::1
-+
-+	# test ping to remote address
-+#	ping6 -c 3 2001::1
-+}
-+
-+#ip6demo
 Index: headers/private/net/net_datalink.h
 ===================================================================
 --- headers/private/net/net_datalink.h	(revision 37725)
