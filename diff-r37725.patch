@@ -1,0 +1,1627 @@
+Index: build/jam/HaikuImage
+===================================================================
+--- build/jam/HaikuImage	(revision 37725)
++++ build/jam/HaikuImage	(working copy)
+@@ -46,8 +46,8 @@
+ 	mkfifo mkfs mkindex mktemp modifiers mount mount_nfs mountvolume mv
+ 	netcat netstat nl nohup notify nproc
+ 	od open
+-	passwd paste patch pathchk pc ping play playfile playsound playwav pr prio
+-	printenv printf profile ps ptx pwd
++	passwd paste patch pathchk pc ping ping6 play playfile playsound playwav
++	pr prio printenv printf profile ps ptx pwd
+ 	query quit
+ 	rc readlink ReadOnlyBootPrompt reindex release renice rlog rm rmattr
+ 	rmindex rmdir roster route
+@@ -106,9 +106,9 @@
+ 
+ SYSTEM_NETWORK_DEVICES = ethernet loopback ;
+ SYSTEM_NETWORK_DATALINK_PROTOCOLS = ethernet_frame <module>arp loopback_frame
+-	ipv4_datagram ;
++	ipv4_datagram ipv6_datagram ;
+ #SYSTEM_NETWORK_PPP = ipcp modem pap pppoe ;
+-SYSTEM_NETWORK_PROTOCOLS = ipv4 tcp udp icmp unix ;
++SYSTEM_NETWORK_PROTOCOLS = ipv4 ipv6 tcp udp icmp icmp6 unix ;
+ 
+ SYSTEM_ADD_ONS_ACCELERANTS = $(X86_ONLY)radeon.accelerant
+ 	$(X86_ONLY)nvidia.accelerant $(X86_ONLY)matrox.accelerant
+Index: src/tests/kits/net/Jamfile
+===================================================================
+--- src/tests/kits/net/Jamfile	(revision 37725)
++++ src/tests/kits/net/Jamfile	(working copy)
+@@ -34,3 +34,4 @@
+ SubInclude HAIKU_TOP src tests kits net tcp_shell ;
+ SubInclude HAIKU_TOP src tests kits net tcptester ;
+ SubInclude HAIKU_TOP src tests kits net icmp ;
++SubInclude HAIKU_TOP src tests kits net ipv6 ;
+Index: src/tests/kits/net/ipv6/udp_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/udp_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/udp_server.cpp	(revision 0)
+@@ -0,0 +1,86 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++recvLoop(int fd)
++{
++	for (;;) {
++		char buffer[1000];
++		sockaddr_storage address;
++		socklen_t socklen = sizeof(address);
++		memset(&address, 0, socklen);
++
++		int status = recvfrom(fd, buffer, sizeof(buffer) - 1, 0,
++			(sockaddr *) &address, &socklen);
++		if (status < 0) {
++			perror("recvfrom");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, buffer);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &localAddress;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &localAddress;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		// loopback
++		sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	if (bind(fd, (sockaddr *)&localAddress, socketFamily == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	for (;;)
++		recvLoop(fd);
++}
+Index: src/tests/kits/net/ipv6/raw_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/raw_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/raw_server.cpp	(revision 0)
+@@ -0,0 +1,86 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PROTOCOL = 89;
++
++
++void
++recvLoop(int fd)
++{
++	for (;;) {
++		char buffer[1000];
++		sockaddr_storage address;
++		socklen_t socklen = sizeof(address);
++		memset(&address, 0, socklen);
++
++		int status = recvfrom(fd, buffer, sizeof(buffer) - 1, 0,
++			(sockaddr *) &address, &socklen);
++		if (status < 0) {
++			perror("recvfrom");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			char *p = buffer;
++			if (address.ss_family == AF_INET && status >= sizeof(struct ip))
++				p += sizeof(struct ip);
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, p);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_RAW, TEST_PROTOCOL);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &localAddress;
++		sa->sin_family = AF_INET;
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &localAddress;
++		sa->sin6_family = AF_INET6;
++	}
++
++	// TODO: is this even necessary?
++	if (bind(fd, (sockaddr *)&localAddress, socketFamily == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	for (;;)
++		recvLoop(fd);
++}
+Index: src/tests/kits/net/ipv6/tcp_udp_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/tcp_udp_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/tcp_udp_server.cpp	(revision 0)
+@@ -0,0 +1,140 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++usage()
++{
++	printf("server [tcp|udp] [4|6] [local-address]\n");
++	exit(1);
++}
++
++
++void
++recvLoop(int fd)
++{
++	for (;;)	{
++		char buffer[1000];
++		int status = recv(fd, buffer, sizeof(buffer) - 1, 0);
++		if (status < 0) {
++			perror("recv");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, buffer);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketType = SOCK_DGRAM;
++	int socketFamily = AF_INET;
++	if (argc > 1) {
++		if (!strcmp(argv[1], "tcp"))
++			socketType = SOCK_STREAM;
++		else if (!strcmp(argv[1], "udp"))
++			socketType = SOCK_DGRAM;
++		else
++			usage();
++	}
++	if (argc > 2) {
++		switch (atoi(argv[2])) {
++		case 4:
++			socketFamily = AF_INET;
++			break;
++		case 6:
++			socketFamily = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	localAddress.ss_family = socketFamily;
++	((sockaddr_in *) &localAddress)->sin_port = htons(TEST_PORT);
++
++	if (argc > 3) {
++		do {
++			void *dstBuffer = &((sockaddr_in *) &localAddress)->sin_addr;
++			if (inet_pton(AF_INET, argv[3], dstBuffer) == 1) {
++				printf("using IPv4 local address\n");
++				localAddress.ss_family = AF_INET;
++				break;
++			}
++
++			dstBuffer = &((sockaddr_in6 *) &localAddress)->sin6_addr;
++			if (inet_pton(AF_INET6, argv[3], dstBuffer) == 1) {
++				printf("using IPv6 local address\n");
++				localAddress.ss_family = AF_INET6;
++				break;
++			}
++
++			usage();
++		} while (false);
++	}
++
++	int fd = socket(socketFamily, socketType, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	if (bind(fd, (sockaddr *)&localAddress, localAddress.ss_family == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	switch (socketType) {
++	case SOCK_DGRAM:
++		for (;;)
++			recvLoop(fd);
++		break;
++	case SOCK_STREAM:
++		if (listen(fd, 5) < 0) {
++			perror("listen");
++			return 1;
++		}
++		for (;;) {
++			int clientfd = accept(fd, NULL, 0);
++			if (clientfd < 0) {
++				perror("accept");
++				return 1;
++			}
++			printf("TCP server: got some client!\n");
++			if (fork() != 0) {
++				// parent code
++				close(clientfd);
++				continue;
++			}
++			// child code
++			close(fd);
++			recvLoop(clientfd);
++			exit(0);
++		}
++		break;
++	}
++}
+Index: src/tests/kits/net/ipv6/multicast_sender.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/multicast_sender.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/multicast_sender.cpp	(revision 0)
+@@ -0,0 +1,94 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	int i = 1;
++	if (argc > i) {
++		if (!strcmp(argv[i], "-4")) {
++			i++;
++			socketFamily = AF_INET;
++		} else if (!strcmp(argv[i], "-6")) {
++			i++;
++			socketFamily = AF_INET6;
++		}
++	}
++	in_addr multicastSource;
++	multicastSource.s_addr = 0;
++	if (argc > i) {
++		if (!strcmp(argv[i], "-s")) {
++			++i;
++			if (inet_aton(argv[i], &multicastSource) == 0) {
++				fprintf(stderr, "IPv4 source address expected");
++				return -1;
++			}
++			++i;
++		}
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++		sa->sin_addr.s_addr = htonl(INADDR_ALLHOSTS_GROUP);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		// ff01::1 (all nodes multicast)
++		sa->sin6_addr.s6_addr[0] = 0xff;
++		sa->sin6_addr.s6_addr[1] = 0x01;
++		sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	if (multicastSource.s_addr) {
++		if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF,
++				&multicastSource, sizeof(multicastSource)) < 0) {
++			perror("setsockopt IP_MULTICAST_IF");
++			return -1;
++		}
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/Jamfile
+===================================================================
+--- src/tests/kits/net/ipv6/Jamfile	(revision 0)
++++ src/tests/kits/net/ipv6/Jamfile	(revision 0)
+@@ -0,0 +1,12 @@
++SubDir HAIKU_TOP src tests kits net ipv6 ;
++
++SimpleTest raw_server : raw_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest raw_client : raw_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest udp_server : udp_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest udp_client : udp_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest tcp_udp_server : tcp_udp_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest tcp_udp_client : tcp_udp_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest multicast_sender : multicast_sender.cpp : $(TARGET_NETWORK_LIBS) ;
+Index: src/tests/kits/net/ipv6/udp_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/udp_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/udp_client.cpp	(revision 0)
+@@ -0,0 +1,72 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++		sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		sa->sin6_addr.s6_addr[15] = 0x01; // loopback
++
++		// 2001::1
++		// sa->sin6_addr.s6_addr[0] = 0x20;
++		// sa->sin6_addr.s6_addr[1] = 0x01;
++		// sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/raw_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/raw_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/raw_client.cpp	(revision 0)
+@@ -0,0 +1,65 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PROTOCOL = 89;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_RAW, TEST_PROTOCOL);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_addr.s6_addr[15] = 0x01; // loopback
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/tcp_udp_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/tcp_udp_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/tcp_udp_client.cpp	(revision 0)
+@@ -0,0 +1,98 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++usage()
++{
++	printf("client [tcp|udp] [4|6] [4|6]\n");
++	exit(1);
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketType = SOCK_DGRAM;
++	int socketFamily1 = AF_INET;
++	int socketFamily2 = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "tcp"))
++			socketType = SOCK_STREAM;
++		else if (!strcmp(argv[1], "udp"))
++			socketType = SOCK_DGRAM;
++		else
++			usage();
++	}
++	if (argc > 2) {
++		switch (atoi(argv[2])) {
++		case 4:
++			socketFamily1 = AF_INET;
++			break;
++		case 6:
++			socketFamily1 = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++	if (argc > 3) {
++		switch (atoi(argv[3])) {
++		case 4:
++			socketFamily2 = AF_INET;
++			break;
++		case 6:
++			socketFamily2 = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++
++	int fd = socket(socketFamily1, socketType, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	saddr.ss_family = socketFamily2;
++	((sockaddr_in *) &saddr)->sin_port = htons(TEST_PORT);
++	if (connect(fd, (sockaddr *) &saddr, socketFamily2 == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("connect");
++		close(fd);
++		return -1;
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = send(fd, buffer, length, 0);
++	if (status < length) {
++		if (status < 0)
++			perror("send");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++	close(fd);
++	return 0;
++}
+Index: src/add-ons/kernel/network/protocols/l2cap/l2cap_address.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/l2cap/l2cap_address.cpp	(revision 37725)
++++ src/add-ons/kernel/network/protocols/l2cap/l2cap_address.cpp	(working copy)
+@@ -413,7 +413,7 @@
+ 		0,
+ 		NULL
+ 	},
+-	true, // has_broadcast_address
++	NET_ADDRESS_MODULE_FLAG_BROADCAST_ADDRESS,
+ 	l2cap_copy_address,
+ 	l2cap_mask_address,
+ 	l2cap_equal_addresses,
+Index: src/add-ons/kernel/network/protocols/ipv4/ipv4_address.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv4/ipv4_address.cpp	(revision 37725)
++++ src/add-ons/kernel/network/protocols/ipv4/ipv4_address.cpp	(working copy)
+@@ -507,7 +507,7 @@
+ 		0,
+ 		NULL
+ 	},
+-	true, // has_broadcast_address
++	NET_ADDRESS_MODULE_FLAG_BROADCAST_ADDRESS,
+ 	ipv4_copy_address,
+ 	ipv4_mask_address,
+ 	ipv4_equal_addresses,
+Index: src/add-ons/kernel/network/protocols/unix/UnixAddress.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/unix/UnixAddress.cpp	(revision 37725)
++++ src/add-ons/kernel/network/protocols/unix/UnixAddress.cpp	(working copy)
+@@ -290,7 +290,7 @@
+ 		0,
+ 		NULL
+ 	},
+-	true, // has_broadcast_address
++	NET_ADDRESS_MODULE_FLAG_BROADCAST_ADDRESS,
+ 	unix_copy_address,
+ 	unix_mask_address,
+ 	unix_equal_addresses,
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp	(revision 37726)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp	(working copy)
+@@ -52,13 +52,13 @@
+ 
+ 
+ struct IPv6Header {
+-	struct ip6_hdr h;
++	struct ip6_hdr header;
+ 
+-	uint8 ProtocolVersion() const { return h.ip6_vfc & IPV6_VERSION_MASK; }
+-	uint8 ServiceType() const { return ntohl(h.ip6_flow) >> 20;}
+- 	uint16 PayloadLength() const { return ntohs(h.ip6_plen); }
+-	const in6_addr& Dst() const { return h.ip6_dst; }
+-	const in6_addr& Src() const { return h.ip6_src; }
++	uint8 ProtocolVersion() const { return header.ip6_vfc & IPV6_VERSION_MASK; }
++	uint8 ServiceType() const { return ntohl(header.ip6_flow) >> 20;}
++ 	uint16 PayloadLength() const { return ntohs(header.ip6_plen); }
++	const in6_addr& Dst() const { return header.ip6_dst; }
++	const in6_addr& Src() const { return header.ip6_src; }
+ 	uint16 GetTransportHeaderOffset(net_buffer* buffer) const;
+ };
+ 
+@@ -139,7 +139,7 @@
+ IPv6Header::GetTransportHeaderOffset(net_buffer* buffer) const
+ {
+ 	uint16 offset = sizeof(struct ip6_hdr);
+-	uint8 next = h.ip6_nxt;
++	uint8 next = header.ip6_nxt;
+ 
+ 	// these are the extension headers that might be supported one day
+ 	while (next == IPPROTO_HOPOPTS
+@@ -192,10 +192,11 @@
+ 	dprintf("  version: %d\n", header.ProtocolVersion() >> 4);
+ 	dprintf("  service_type: %d\n", header.ServiceType());
+ 	dprintf("  payload_length: %d\n", header.PayloadLength());
+-	dprintf("  next_header: %d\n", header.h.ip6_nxt);
+-	dprintf("  hop_limit: %d\n", header.h.ip6_hops);
+-	dprintf("  source: %s\n", ip6_sprintf(&header.h.ip6_src, addrbuf));
+-	dprintf("  destination: %s\n", ip6_sprintf(&header.h.ip6_dst, addrbuf));
++	dprintf("  next_header: %d\n", header.header.ip6_nxt);
++	dprintf("  hop_limit: %d\n", header.header.ip6_hops);
++	dprintf("  source: %s\n", ip6_sprintf(&header.header.ip6_src, addrbuf));
++	dprintf("  destination: %s\n",
++		ip6_sprintf(&header.header.ip6_dst, addrbuf));
+ #endif
+ }
+ 
+@@ -968,8 +969,6 @@
+ 	uint16 transportHeaderOffset = header.GetTransportHeaderOffset(buffer);
+ 	uint8 protocol = buffer->protocol;
+ 
+-	buffer->hoplimit = header.h.ip6_hlim;
+-
+ 	// remove any trailing/padding data
+ 	status_t status = gBufferModule->trim(buffer, packetLength);
+ 	if (status != B_OK)
+@@ -979,8 +978,15 @@
+ 	// TODO: check for fragmentation
+ 	//
+ 
++	// tell the buffer to preserve removed ipv6 header - may need it later
++	gBufferModule->store_header(buffer);
++
++	TRACE("store_header for %p\n", buffer);
++
++	// remove ipv6 headers for now
+ 	gBufferModule->remove_header(buffer, transportHeaderOffset);
+ 
++	// deliver the data to raw sockets
+ 	raw_receive_data(buffer);
+ 
+ 	net_protocol_module_info* module = receiving_protocol(protocol);
+@@ -1029,30 +1035,45 @@
+ 
+ 
+ ssize_t
+-ipv6_process_ancillary_data_no_container(net_protocol* protocol,
++ipv6_process_ancillary_data_no_container(net_protocol* _protocol,
+ 	net_buffer* buffer, void* msgControl, size_t msgControlLen)
+ {
++	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
+ 	ssize_t bytesWritten = 0;
+ 
+-	if (((ipv6_protocol*)protocol)->receive_hoplimit != 0) {
++	if (protocol->receive_hoplimit != 0) {
+ 		TRACE("receive_hoplimit");
+ 
+ 		if (msgControlLen < CMSG_SPACE(sizeof(int)))
+ 			return B_NO_MEMORY;
+ 
++		TRACE("restore_header for %p\n", buffer);
++
++		if (gBufferModule->stored_header_length(buffer)
++				< (int)sizeof(ip6_hdr))
++			return B_ERROR;
++
++		IPv6Header header;
++		if (gBufferModule->restore_header(buffer, 0, &header, sizeof(ip6_hdr))
++				!= B_OK)
++			return B_ERROR;
++
++		if (header.ProtocolVersion() != IPV6_VERSION)
++			return B_ERROR;
++
+ 		cmsghdr* messageHeader = (cmsghdr*)((char*)msgControl + bytesWritten);
+ 		messageHeader->cmsg_len = CMSG_LEN(sizeof(int));
+ 		messageHeader->cmsg_level = IPPROTO_IPV6;
+ 		messageHeader->cmsg_type = IPV6_HOPLIMIT;
+ 
+-		int hoplimit = buffer->hoplimit;
++		int hoplimit = header.header.ip6_hlim;
+ 		memcpy(CMSG_DATA(messageHeader), &hoplimit, sizeof(int));
+ 
+ 		bytesWritten += CMSG_SPACE(sizeof(int));
+ 		msgControlLen -= CMSG_SPACE(sizeof(int));
+ 	}
+ 
+-	if (((ipv6_protocol*)protocol)->receive_pktinfo != 0) {
++	if (protocol->receive_pktinfo != 0) {
+ 		TRACE("receive_pktinfo");
+ 
+ 		if (msgControlLen < CMSG_SPACE(sizeof(struct in6_pktinfo)))
+@@ -1161,7 +1182,6 @@
+ 			return init_ipv6();
+ 		case B_MODULE_UNINIT:
+ 			return uninit_ipv6();
+-
+ 		default:
+ 			return B_ERROR;
+ 	}
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp	(revision 37726)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp	(working copy)
+@@ -247,8 +247,8 @@
+ 			continue;
+ 
+ 		for (uint8 bit = 0; bit < 8; bit++) {
+-			if (pmask[i] & (1 << bit))
+-				return bit;
++			if ((pmask[i] & (1 << (7 - bit))) == 0)
++				return i * 8 + bit;
+ 		}
+ 	}
+ 
+@@ -276,7 +276,7 @@
+ 		} else if (pmask[i] == 0) {
+ 			zero = true;
+ 		} else {
+-			for (int8 bit = 7; bit > 0; bit--) {
++			for (int8 bit = 7; bit >= 0; bit--) {
+ 				if (pmask[i] & (1 << bit)) {
+ 					if (zero)
+ 						return false;
+@@ -520,8 +520,8 @@
+ 		return B_BAD_VALUE;
+ 
+ 	in6_addr &a = ((sockaddr_in6 *)address)->sin6_addr;
+-	for (uint32 i = 0; i < sizeof(in6_addr); i++)
+-		(*checksum) << a.s6_addr[i];
++	for (uint32 i = 0; i < sizeof(in6_addr); i += 2)
++		(*checksum) << *(uint16*)(a.s6_addr + i);
+ 
+ 	return B_OK;
+ }
+@@ -544,7 +544,7 @@
+ 		0,
+ 		NULL
+ 	},
+-	false, // has_broadcast_address
++	0, // flags
+ 	ipv6_copy_address,
+ 	ipv6_mask_address,
+ 	ipv6_equal_addresses,
+Index: src/add-ons/kernel/network/protocols/tcp/tcp.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/tcp/tcp.cpp	(revision 37725)
++++ src/add-ons/kernel/network/protocols/tcp/tcp.cpp	(working copy)
+@@ -756,6 +756,13 @@
+ 		NULL);
+ 	if (status < B_OK)
+ 		return status;
++	status = gStackModule->register_domain_protocols(AF_INET6,
++		SOCK_STREAM, 0,
++		"network/protocols/tcp/v1",
++		"network/protocols/ipv6/v1",
++		NULL);
++	if (status < B_OK)
++		return status;
+ 
+ 	status = gStackModule->register_domain_protocols(AF_INET, SOCK_STREAM,
+ 		IPPROTO_TCP,
+@@ -764,11 +771,22 @@
+ 		NULL);
+ 	if (status < B_OK)
+ 		return status;
++	status = gStackModule->register_domain_protocols(AF_INET6, SOCK_STREAM,
++		IPPROTO_TCP,
++		"network/protocols/tcp/v1",
++		"network/protocols/ipv6/v1",
++		NULL);
++	if (status < B_OK)
++		return status;
+ 
+ 	status = gStackModule->register_domain_receiving_protocol(AF_INET,
+ 		IPPROTO_TCP, "network/protocols/tcp/v1");
+ 	if (status < B_OK)
+ 		return status;
++	status = gStackModule->register_domain_receiving_protocol(AF_INET6,
++		IPPROTO_TCP, "network/protocols/tcp/v1");
++	if (status < B_OK)
++		return status;
+ 
+ 	add_debugger_command("tcp_endpoints", dump_endpoints,
+ 		"lists all open TCP endpoints");
+Index: src/add-ons/kernel/network/protocols/icmp6/icmp6.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/icmp6/icmp6.cpp	(revision 37725)
++++ src/add-ons/kernel/network/protocols/icmp6/icmp6.cpp	(working copy)
+@@ -8,6 +8,7 @@
+ #include <net_protocol.h>
+ #include <net_stack.h>
+ #include <net_datalink_protocol.h>
++#include <NetUtilities.h>
+ #include <NetBufferUtilities.h>
+ 
+ #include <KernelExport.h>
+@@ -19,7 +20,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include "../ipv6/ipv6_utils.h" // ipv6_checksum()
++#include <ipv6_datagram/ndp.h>
+ 
+ 
+ #define TRACE_ICMP6
+@@ -35,7 +36,7 @@
+ 
+ net_buffer_module_info *gBufferModule;
+ static net_stack_module_info *sStackModule;
+-static net_datalink_protocol_module_info *sIPv6DatalinkModule;
++static net_ndp_module_info *sIPv6NDPModule;
+ 
+ 
+ net_protocol *
+@@ -212,39 +213,37 @@
+ 	TRACE(("  got type %u, code %u, checksum 0x%x\n", header.icmp6_type,
+ 			header.icmp6_code, header.icmp6_cksum));
+ 
+-	// compute and check the checksum
+-	uint16 checksum;
+-	checksum = gBufferModule->checksum(buffer, 0, buffer->size, false);
+-	checksum = ipv6_checksum(&((sockaddr_in6*)buffer->source)->sin6_addr,
+-		&((sockaddr_in6*)buffer->destination)->sin6_addr,
+-		buffer->size, IPPROTO_ICMPV6, checksum);
++	net_domain* domain;
++	if (buffer->interface != NULL)
++		domain = buffer->interface->domain;
++	else
++		domain = sStackModule->get_domain(buffer->source->sa_family);
+ 
+-	TRACE(("  computed checksum: %ld\n", checksum));
++	// TODO: possible?
++	if (domain == NULL || domain->module == NULL)
++		return B_ERROR;
+ 
+-	if (checksum != 0)
+-		return B_BAD_DATA;
++	net_address_module_info* addressModule = domain->address_module;
+ 
++	// compute and check the checksum
++ 	if (Checksum::PseudoHeader(addressModule, gBufferModule, buffer,
++ 			IPPROTO_ICMPV6) != 0)
++ 		return B_BAD_DATA;
++
+ 	switch (header.icmp6_type) {
+ 		case ICMP6_ECHO_REPLY:
+ 			break;
+ 
+ 		case ICMP6_ECHO_REQUEST:
+ 		{
+-			net_domain *domain;
+ 			if (buffer->interface != NULL) {
+-				domain = buffer->interface->domain;
+-
+ 				// We only reply to echo requests of our local interface; we
+ 				// don't reply to broadcast requests
+ 				if (!domain->address_module->equal_addresses(
+ 						buffer->interface->address, buffer->destination))
+ 					break;
+-			} else
+-				domain = sStackModule->get_domain(buffer->source->sa_family);
++			}
+ 
+-			if (domain == NULL || domain->module == NULL)
+-				break;
+-
+ 			net_buffer *reply = gBufferModule->duplicate(buffer);
+ 			if (reply == NULL)
+ 				return B_NO_MEMORY;
+@@ -260,11 +259,8 @@
+ 
+ 			header.Sync();
+ 
+-			checksum = gBufferModule->checksum(buffer, 0, buffer->size, false);
+-			*ICMP6ChecksumField(reply) = 
+-				ipv6_checksum(&((sockaddr_in6*)buffer->source)->sin6_addr,
+-					&((sockaddr_in6*)buffer->destination)->sin6_addr,
+-					buffer->size, IPPROTO_ICMPV6, checksum);
++			*ICMP6ChecksumField(reply) = Checksum::PseudoHeader(addressModule,
++				gBufferModule, buffer, IPPROTO_ICMPV6);
+ 
+ 			status_t status = domain->module->send_data(NULL, reply);
+ 			if (status < B_OK) {
+@@ -274,8 +270,8 @@
+ 		}
+ 
+ 		default:
+-			// forward unrecognized messages to datalink layer
+-			return sIPv6DatalinkModule->receive_data(buffer);
++			// unrecognized messages go to neighbor discovery protocol handler
++			return sIPv6NDPModule->receive_data(buffer);
+ 	}
+ 
+ 	gBufferModule->free(buffer);
+@@ -383,8 +379,8 @@
+ module_dependency module_dependencies[] = {
+ 	{NET_STACK_MODULE_NAME, (module_info **)&sStackModule},
+ 	{NET_BUFFER_MODULE_NAME, (module_info **)&gBufferModule},
+-	{"network/datalink_protocols/ipv6_datagram/v1",
+-		(module_info **)&sIPv6DatalinkModule},
++	{"network/datalink_protocols/ipv6_datagram/ndp/v1",
++		(module_info **)&sIPv6NDPModule},
+ 	{}
+ };
+ 
+Index: src/add-ons/kernel/network/protocols/icmp6/Jamfile
+===================================================================
+--- src/add-ons/kernel/network/protocols/icmp6/Jamfile	(revision 37725)
++++ src/add-ons/kernel/network/protocols/icmp6/Jamfile	(working copy)
+@@ -11,6 +11,8 @@
+ }
+ 
+ UsePrivateHeaders kernel net ;
++UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel network protocols ] : true ;
++UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel network datalink_protocols ] : true ;
+ 
+ KernelAddon icmp6 :
+ 	icmp6.cpp
+Index: src/add-ons/kernel/network/stack/datalink.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/datalink.cpp	(revision 37725)
++++ src/add-ons/kernel/network/stack/datalink.cpp	(working copy)
+@@ -30,7 +30,9 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
+-#include <netinet6/in6.h> // TODO
++// TODO: this is only needed for IPv6 multicast route code;
++// remove it when the code will be refactored
++#include <netinet6/in6.h>
+ 
+ 
+ struct datalink_protocol : net_protocol {
+@@ -752,7 +754,8 @@
+ 
+ 					// reset the broadcast address if the address family has such
+ 					sockaddr* broadcast;
+-					if (interface->domain->address_module->has_broadcast_address) {
++					if ((interface->domain->address_module->flags
++						& NET_ADDRESS_MODULE_FLAG_BROADCAST_ADDRESS) != 0) {
+ 						broadcast = reallocate_address(&interface->destination,
+ 							request.ifr_addr.sa_len);
+ 					} else {
+@@ -971,7 +974,6 @@
+ 	interface_protocol_init,
+ 	interface_protocol_uninit,
+ 	interface_protocol_send_data,
+-	NULL, // receive_data
+ 	interface_protocol_up,
+ 	interface_protocol_down,
+ 	interface_protocol_control,
+Index: src/add-ons/kernel/network/datalink_protocols/arp/arp.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/arp/arp.cpp	(revision 37725)
++++ src/add-ons/kernel/network/datalink_protocols/arp/arp.cpp	(working copy)
+@@ -1095,7 +1095,6 @@
+ 	arp_init_protocol,
+ 	arp_uninit_protocol,
+ 	arp_send_data,
+-	NULL, // receive_data
+ 	arp_up,
+ 	arp_down,
+ 	arp_control,
+Index: src/add-ons/kernel/network/datalink_protocols/ipv4_datagram/ipv4_datagram.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv4_datagram/ipv4_datagram.cpp	(revision 37725)
++++ src/add-ons/kernel/network/datalink_protocols/ipv4_datagram/ipv4_datagram.cpp	(working copy)
+@@ -127,6 +127,7 @@
+ 	return B_ERROR;
+ }
+ 
++
+ net_datalink_protocol_module_info gIPv4DataLinkModule = {
+ 	{
+ 		"network/datalink_protocols/ipv4_datagram/v1",
+@@ -136,7 +137,6 @@
+ 	ipv4_datalink_init,
+ 	ipv4_datalink_uninit,
+ 	ipv4_datalink_send_data,
+-	NULL, // receive_data
+ 	ipv4_datalink_up,
+ 	ipv4_datalink_down,
+ 	ipv4_datalink_control,
+Index: src/add-ons/kernel/network/datalink_protocols/loopback_frame/loopback_frame.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/loopback_frame/loopback_frame.cpp	(revision 37725)
++++ src/add-ons/kernel/network/datalink_protocols/loopback_frame/loopback_frame.cpp	(working copy)
+@@ -171,7 +171,6 @@
+ 	loopback_frame_init,
+ 	loopback_frame_uninit,
+ 	loopback_frame_send_data,
+-	NULL, // receive_data
+ 	loopback_frame_up,
+ 	loopback_frame_down,
+ 	loopback_frame_control,
+Index: src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp	(revision 37725)
++++ src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp	(working copy)
+@@ -31,8 +31,9 @@
+ 
+ #include <new>
+ 
+-#include "../../protocols/ipv6/jenkins.h" // TODO: move this file
+-#include "../../protocols/ipv6/ipv6_address.h"
++#include <ipv6/jenkins.h>
++#include <ipv6/ipv6_address.h>
++#include "ndp.h"
+ 
+ 
+ #define TRACE_NDP
+@@ -83,7 +84,19 @@
+ 	uint8		link_address[ETHER_ADDRESS_LENGTH];
+ } _PACKED;
+ 
++struct router_advertisement_header {
++	uint8		icmp6_type;
++	uint8		icmp6_code;
++	uint16		icmp6_checksum;
++	uint8		hop_limit;
++	uint8		flags;
++	uint16		router_lifetime;
++	uint32		reachable_time;
++	uint32		retransmit_timer;
++	uint8		options[];
++} _PACKED;
+ 
++
+ struct ndp_entry {
+ 	ndp_entry*	next;
+ 	in6_addr	protocol_address;
+@@ -532,8 +545,10 @@
+ 
+ 
+ static status_t
+-handle_neighbor_solicitation(net_buffer* buffer)
++ndp_receive_solicitation(net_buffer* buffer, bool* reuseBuffer)
+ {
++	*reuseBuffer = false;
++
+ 	NetBufferHeaderReader<neighbor_discovery_header> bufferHeader(buffer);
+ 	if (bufferHeader.Status() < B_OK)
+ 		return bufferHeader.Status();
+@@ -594,22 +609,19 @@
+ 	buffer->flags = 0;
+ 		// make sure this won't be a broadcast message
+ 
+-	// TODO: there is not need to clone, could reuse old buffer
+-	net_buffer* clone = gBufferModule->clone(buffer, true);
+-	if (clone == NULL)
+-		return B_NO_MEMORY;
+-
+ 	if (sIPv6Protocol == NULL)
+ 		return B_ERROR;
+ 
++	*reuseBuffer = true;
++
+ 	// send the ICMPv6 packet out
+ 	TRACE(("Sending Neighbor Advertisement\n"));
+-	return sIPv6Module->send_data(sIPv6Protocol, clone);
++	return sIPv6Module->send_data(sIPv6Protocol, buffer);
+ }
+ 
+ 
+ static void
+-handle_neighbor_advertisement(net_buffer* buffer)
++ndp_receive_advertisement(net_buffer* buffer)
+ {
+ 	// TODO: also process unsolicited advertisments?
+ 	if ((buffer->flags & MSG_MCAST) != 0)
+@@ -642,6 +654,53 @@
+ 
+ 
+ static void
++ndp_receive_router_advertisement(net_buffer* buffer)
++{
++	NetBufferHeaderReader<router_advertisement_header> bufferHeader(buffer);
++	if (bufferHeader.Status() < B_OK)
++		return;
++
++	// TODO: check for validity
++
++	// TODO: parse the options
++}
++
++
++static status_t
++ndp_receive_data(net_buffer* buffer)
++{
++	dprintf("ndp_receive_data\n");
++
++	NetBufferHeaderReader<icmp6_hdr> icmp6Header(buffer);
++	if (icmp6Header.Status() < B_OK)
++		return icmp6Header.Status();
++
++	bool reuseBuffer = false;
++
++	switch (icmp6Header->icmp6_type) {
++		case ND_NEIGHBOR_SOLICIT:
++			TRACE(("  received Neighbor Solicitation\n"));
++			ndp_receive_solicitation(buffer, &reuseBuffer);
++			break;
++
++		case ND_NEIGHBOR_ADVERT:
++			TRACE(("  received Neighbor Advertisement\n"));
++			ndp_receive_advertisement(buffer);
++			break;
++
++		case ND_ROUTER_ADVERT:
++			TRACE(("  received Router Advertisement\n"));
++			ndp_receive_router_advertisement(buffer);
++			break;
++	}
++
++	if (reuseBuffer == false)
++		gBufferModule->free(buffer);
++	return B_OK;
++}
++
++
++static void
+ ndp_timer(struct net_timer* timer, void* data)
+ {
+ 	ndp_entry* entry = (ndp_entry*)data;
+@@ -898,30 +957,6 @@
+ 
+ 
+ static status_t
+-ipv6_datalink_receive_data(net_buffer* buffer)
+-{
+-	NetBufferHeaderReader<icmp6_hdr> bufferHeader(buffer);
+-	if (bufferHeader.Status() < B_OK)
+-		return bufferHeader.Status();
+-
+-	switch (bufferHeader->icmp6_type) {
+-		case ND_NEIGHBOR_SOLICIT:
+-			TRACE(("  received Neighbor Solicitation\n"));
+-			handle_neighbor_solicitation(buffer);
+-			break;
+-
+-		case ND_NEIGHBOR_ADVERT:
+-			TRACE(("  received Neighbor Advertisement\n"));
+-			handle_neighbor_advertisement(buffer);
+-			break;
+-	}
+-
+-	gBufferModule->free(buffer);
+-	return B_OK;
+-}
+-
+-
+-static status_t
+ ipv6_datalink_up(net_datalink_protocol* _protocol)
+ {
+ 	ipv6_datalink_protocol* protocol = (ipv6_datalink_protocol*)_protocol;
+@@ -1058,6 +1093,7 @@
+ 	return B_ERROR;
+ }
+ 
++
+ net_datalink_protocol_module_info gIPv6DataLinkModule = {
+ 	{
+ 		"network/datalink_protocols/ipv6_datagram/v1",
+@@ -1067,7 +1103,6 @@
+ 	ipv6_datalink_init,
+ 	ipv6_datalink_uninit,
+ 	ipv6_datalink_send_data,
+-	ipv6_datalink_receive_data,
+ 	ipv6_datalink_up,
+ 	ipv6_datalink_down,
+ 	ipv6_datalink_control,
+@@ -1075,6 +1110,14 @@
+ 	ipv6_datalink_leave_multicast,
+ };
+ 
++net_ndp_module_info gIPv6NDPModule = {
++	{
++		"network/datalink_protocols/ipv6_datagram/ndp/v1",
++		0,
++		NULL
++	},
++	ndp_receive_data
++};
+ 
+ module_dependency module_dependencies[] = {
+ 	{NET_STACK_MODULE_NAME, (module_info**)&sStackModule},
+@@ -1085,5 +1128,6 @@
+ 
+ module_info* modules[] = {
+ 	(module_info*)&gIPv6DataLinkModule,
++	(module_info*)&gIPv6NDPModule,
+ 	NULL
+ };
+Index: src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/Jamfile
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/Jamfile	(revision 37725)
++++ src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/Jamfile	(working copy)
+@@ -12,6 +12,7 @@
+ 
+ UsePrivateKernelHeaders ;
+ UsePrivateHeaders kernel net ;
++UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel network protocols ] : true ;
+ 
+ KernelAddon ipv6_datagram :
+ 	ipv6_datagram.cpp
+Index: src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ndp.h
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ndp.h	(revision 0)
++++ src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ndp.h	(revision 0)
+@@ -0,0 +1,19 @@
++/*
++ * Copyright 2010, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ */
++#ifndef IPV6_NDP_H
++#define IPV6_NDP_H
++
++
++#include <net_buffer.h>
++
++
++struct net_ndp_module_info {
++	module_info info;
++
++	status_t	(*receive_data)(net_buffer* buffer);
++};
++
++
++#endif	// IPV6_NDP_H
+Index: src/add-ons/kernel/network/datalink_protocols/ethernet_frame/ethernet_frame.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ethernet_frame/ethernet_frame.cpp	(revision 37725)
++++ src/add-ons/kernel/network/datalink_protocols/ethernet_frame/ethernet_frame.cpp	(working copy)
+@@ -210,7 +210,6 @@
+ 	ethernet_frame_init,
+ 	ethernet_frame_uninit,
+ 	ethernet_frame_send_data,
+-	NULL, // receive_data
+ 	ethernet_frame_up,
+ 	ethernet_frame_down,
+ 	ethernet_frame_control,
+Index: src/bin/network/ping6/ping6.c
+===================================================================
+--- src/bin/network/ping6/ping6.c	(revision 37725)
++++ src/bin/network/ping6/ping6.c	(working copy)
+@@ -110,6 +110,7 @@
+ #include <netdb.h>
+ 
+ #include <ctype.h>
++#include <err.h>
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <math.h>
+@@ -273,38 +274,6 @@
+ void	 usage(void);
+ 
+ 
+-static void err(int exitval, char *where)
+-{
+-	printf("error: %s: error %d [%s]\n", where, errno, strerror(errno));
+-	exit(exitval);
+-}
+-
+-static void errx(int exitval, char *fmt_string, ...)
+-{
+-	va_list list;
+-	va_start(list, fmt_string);
+-	printf("error: ");
+-	vprintf(fmt_string, list);
+-	printf("\n");
+-	va_end(list);
+-	exit(exitval);
+-}
+-
+-static void warn(char *where)
+-{
+-	printf("warning: %s: error %d [%s]\n", where, errno, strerror(errno));
+-}
+-
+-static void warnx(char *fmt_string, ...)
+-{
+-	va_list list;
+-	va_start(list, fmt_string);
+-	printf("warning: ");
+-	vprintf(fmt_string, list);
+-	printf("\n");
+-}
+-
+-
+ int
+ main(argc, argv)
+ 	int argc;
+@@ -701,6 +670,10 @@
+ #endif
+ 	}
+ 
++	/* revoke root privilege */
++	seteuid(getuid());
++	setuid(getuid());
++
+ 	if ((options & F_FLOOD) && (options & F_INTERVAL))
+ 		errx(1, "-f and -i incompatible options");
+ 
+Index: src/bin/network/ping6/Jamfile
+===================================================================
+--- src/bin/network/ping6/Jamfile	(revision 37725)
++++ src/bin/network/ping6/Jamfile	(working copy)
+@@ -8,21 +8,12 @@
+ 		# Unfortunately we get more than we want, namely all POSIX headers.
+ }
+ 
++UseHeaders [ FDirName $(HAIKU_TOP) headers compatibility bsd ] : true ;
++
+ BinCommand ping6 :
+ 	ping6.c
+-	: $(TARGET_NETWORK_LIBS) $(TARGET_SELECT_UNAME_ETC_LIB) ;
++	: libbsd.so $(TARGET_NETWORK_LIBS) $(TARGET_SELECT_UNAME_ETC_LIB) ;
+ 
+-# Installation -- in the test directory for the time being
+-HaikuInstall install-networking
+-	: [ FDirName $(HAIKU_TEST_DIR) kits net ]
+-	: ping6 ;
+-
+-HaikuInstall install-userland-networking 
+-	: [ FDirName $(HAIKU_TEST_DIR) kits net userland ]
+-	: ping6
+-	: installed-userland-networking
+-;
+-
+ Package haiku-networkingkit-cvs :
+ 	ping6 :
+ 	boot home Desktop haiku-networkingkit ;
+Index: src/bin/network/ifconfig/ifconfig.cpp
+===================================================================
+--- src/bin/network/ifconfig/ifconfig.cpp	(revision 37725)
++++ src/bin/network/ifconfig/ifconfig.cpp	(working copy)
+@@ -215,7 +215,7 @@
+ 
+ 	for (uint8 i = 0; i < sizeof(in6_addr); i++, prefixLength -= 8) {
+ 		if (prefixLength < 8) {
+-			const uint8 masks[] = {
++			static const uint8 masks[] = {
+ 				0x00, 0x80, 0xc0, 0xe0,
+ 				0xf0, 0xf8, 0xfc, 0xfe
+ 			};
+Index: src/bin/network/route/route.cpp
+===================================================================
+--- src/bin/network/route/route.cpp	(revision 37725)
++++ src/bin/network/route/route.cpp	(working copy)
+@@ -198,7 +198,7 @@
+ 
+ 	for (uint8 i = 0; i < sizeof(in6_addr); i++, prefixLength -= 8) {
+ 		if (prefixLength < 8) {
+-			const uint8 masks[] = {
++			static const uint8 masks[] = {
+ 				0x00, 0x80, 0xc0, 0xe0,
+ 				0xf0, 0xf8, 0xfc, 0xfe
+ 			};
+Index: data/etc/profile
+===================================================================
+--- data/etc/profile	(revision 37725)
++++ data/etc/profile	(working copy)
+@@ -103,3 +103,34 @@
+     . /etc/bash_completion
+ fi
+ 
++alias dmesg='tail -f /var/log/syslog'
++
++#
++# IPv6 command quick demonstration.
++# Note that for the last test to work, there should be 
++# a host with address fc00::2 connected to the link.
++# Ping from outside is also supprted but not shown here.
++#
++
++ip6demo()
++{
++	# configure IPv6 address on loopback interface
++#	ifconfig loop:0 inet6 ::1 up
++
++	# remove existing IPv4 interface
++	ifconfig -d /dev/net/etherpci/0
++
++	# configure IPv6 address on ethernet interface
++	ifconfig /dev/net/etherpci/0 inet6 2001::2 plen 64 up
++
++	# configure IPv6 default route
++#	route add /dev/net/etherpci/0 inet6 :: plen 0 gateway 2001::1
++
++	# test ping to local address
++#	ping6 -c 3 ::1
++
++	# test ping to remote address
++#	ping6 -c 3 2001::1
++}
++
++#ip6demo
+Index: headers/private/net/net_datalink.h
+===================================================================
+--- headers/private/net/net_datalink.h	(revision 37725)
++++ headers/private/net/net_datalink.h	(working copy)
+@@ -98,9 +98,11 @@
+ 					struct net_route_info *info);
+ };
+ 
++#define NET_ADDRESS_MODULE_FLAG_BROADCAST_ADDRESS		0x01
++
+ struct net_address_module_info {
+ 	module_info info;
+-	bool has_broadcast_address;
++	uint32 flags;
+ 
+ 	status_t (*copy_address)(const sockaddr *from, sockaddr **to,
+ 					bool replaceWithZeros, const sockaddr *mask);
+Index: headers/private/net/net_datalink_protocol.h
+===================================================================
+--- headers/private/net/net_datalink_protocol.h	(revision 37725)
++++ headers/private/net/net_datalink_protocol.h	(working copy)
+@@ -24,7 +24,6 @@
+ 
+ 	status_t	(*send_data)(net_datalink_protocol *self,
+ 					net_buffer *buffer);
+-	status_t	(*receive_data)(net_buffer *buffer);
+ 
+ 	status_t	(*interface_up)(net_datalink_protocol *self);
+ 	void		(*interface_down)(net_datalink_protocol *self);
