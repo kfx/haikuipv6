@@ -1,0 +1,2410 @@
+Index: build/jam/HaikuImage
+===================================================================
+--- build/jam/HaikuImage	(revision 37980)
++++ build/jam/HaikuImage	(working copy)
+@@ -105,10 +105,10 @@
+ ;
+ 
+ SYSTEM_NETWORK_DEVICES = ethernet loopback ;
+-SYSTEM_NETWORK_DATALINK_PROTOCOLS = ethernet_frame <module>arp loopback_frame ;
+-	#ipv6_datagram ;
++SYSTEM_NETWORK_DATALINK_PROTOCOLS = ethernet_frame <module>arp loopback_frame
++	ipv6_datagram ;
+ #SYSTEM_NETWORK_PPP = ipcp modem pap pppoe ;
+-SYSTEM_NETWORK_PROTOCOLS = ipv4 tcp udp icmp unix ; # icmp6 ipv6 ;
++SYSTEM_NETWORK_PROTOCOLS = ipv4 tcp udp icmp unix icmp6 ipv6 ;
+ 
+ SYSTEM_ADD_ONS_ACCELERANTS = $(X86_ONLY)radeon.accelerant
+ 	$(X86_ONLY)nvidia.accelerant $(X86_ONLY)matrox.accelerant
+Index: src/tests/kits/net/Jamfile
+===================================================================
+--- src/tests/kits/net/Jamfile	(revision 37980)
++++ src/tests/kits/net/Jamfile	(working copy)
+@@ -34,3 +34,4 @@
+ SubInclude HAIKU_TOP src tests kits net tcp_shell ;
+ SubInclude HAIKU_TOP src tests kits net tcptester ;
+ SubInclude HAIKU_TOP src tests kits net icmp ;
++SubInclude HAIKU_TOP src tests kits net ipv6 ;
+Index: src/tests/kits/net/ipv6/udp_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/udp_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/udp_server.cpp	(revision 0)
+@@ -0,0 +1,86 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++recvLoop(int fd)
++{
++	for (;;) {
++		char buffer[1000];
++		sockaddr_storage address;
++		socklen_t socklen = sizeof(address);
++		memset(&address, 0, socklen);
++
++		int status = recvfrom(fd, buffer, sizeof(buffer) - 1, 0,
++			(sockaddr *) &address, &socklen);
++		if (status < 0) {
++			perror("recvfrom");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, buffer);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &localAddress;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &localAddress;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		// loopback
++		sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	if (bind(fd, (sockaddr *)&localAddress, socketFamily == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	for (;;)
++		recvLoop(fd);
++}
+Index: src/tests/kits/net/ipv6/raw_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/raw_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/raw_server.cpp	(revision 0)
+@@ -0,0 +1,86 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PROTOCOL = 89;
++
++
++void
++recvLoop(int fd)
++{
++	for (;;) {
++		char buffer[1000];
++		sockaddr_storage address;
++		socklen_t socklen = sizeof(address);
++		memset(&address, 0, socklen);
++
++		int status = recvfrom(fd, buffer, sizeof(buffer) - 1, 0,
++			(sockaddr *) &address, &socklen);
++		if (status < 0) {
++			perror("recvfrom");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			char *p = buffer;
++			if (address.ss_family == AF_INET && status >= sizeof(struct ip))
++				p += sizeof(struct ip);
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, p);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_RAW, TEST_PROTOCOL);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &localAddress;
++		sa->sin_family = AF_INET;
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &localAddress;
++		sa->sin6_family = AF_INET6;
++	}
++
++	// TODO: is this even necessary?
++	if (bind(fd, (sockaddr *)&localAddress, socketFamily == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	for (;;)
++		recvLoop(fd);
++}
+Index: src/tests/kits/net/ipv6/tcp_udp_server.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/tcp_udp_server.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/tcp_udp_server.cpp	(revision 0)
+@@ -0,0 +1,140 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++usage()
++{
++	printf("server [tcp|udp] [4|6] [local-address]\n");
++	exit(1);
++}
++
++
++void
++recvLoop(int fd)
++{
++	for (;;)	{
++		char buffer[1000];
++		int status = recv(fd, buffer, sizeof(buffer) - 1, 0);
++		if (status < 0) {
++			perror("recv");
++			exit(-1);
++		}
++		if (status == 0) {
++			printf("received EOF!\n");
++			break;
++		} else {
++			buffer[status] = 0;
++			printf("received %d bytes: \"%s\"\n", status, buffer);
++		}
++	}
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketType = SOCK_DGRAM;
++	int socketFamily = AF_INET;
++	if (argc > 1) {
++		if (!strcmp(argv[1], "tcp"))
++			socketType = SOCK_STREAM;
++		else if (!strcmp(argv[1], "udp"))
++			socketType = SOCK_DGRAM;
++		else
++			usage();
++	}
++	if (argc > 2) {
++		switch (atoi(argv[2])) {
++		case 4:
++			socketFamily = AF_INET;
++			break;
++		case 6:
++			socketFamily = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++
++	sockaddr_storage localAddress;
++	memset(&localAddress, 0, sizeof(localAddress));
++	localAddress.ss_family = socketFamily;
++	((sockaddr_in *) &localAddress)->sin_port = htons(TEST_PORT);
++
++	if (argc > 3) {
++		do {
++			void *dstBuffer = &((sockaddr_in *) &localAddress)->sin_addr;
++			if (inet_pton(AF_INET, argv[3], dstBuffer) == 1) {
++				printf("using IPv4 local address\n");
++				localAddress.ss_family = AF_INET;
++				break;
++			}
++
++			dstBuffer = &((sockaddr_in6 *) &localAddress)->sin6_addr;
++			if (inet_pton(AF_INET6, argv[3], dstBuffer) == 1) {
++				printf("using IPv6 local address\n");
++				localAddress.ss_family = AF_INET6;
++				break;
++			}
++
++			usage();
++		} while (false);
++	}
++
++	int fd = socket(socketFamily, socketType, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	if (bind(fd, (sockaddr *)&localAddress, localAddress.ss_family == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("bind");
++		return -1;
++	}
++
++	switch (socketType) {
++	case SOCK_DGRAM:
++		for (;;)
++			recvLoop(fd);
++		break;
++	case SOCK_STREAM:
++		if (listen(fd, 5) < 0) {
++			perror("listen");
++			return 1;
++		}
++		for (;;) {
++			int clientfd = accept(fd, NULL, 0);
++			if (clientfd < 0) {
++				perror("accept");
++				return 1;
++			}
++			printf("TCP server: got some client!\n");
++			if (fork() != 0) {
++				// parent code
++				close(clientfd);
++				continue;
++			}
++			// child code
++			close(fd);
++			recvLoop(clientfd);
++			exit(0);
++		}
++		break;
++	}
++}
+Index: src/tests/kits/net/ipv6/multicast_sender.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/multicast_sender.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/multicast_sender.cpp	(revision 0)
+@@ -0,0 +1,94 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	int i = 1;
++	if (argc > i) {
++		if (!strcmp(argv[i], "-4")) {
++			i++;
++			socketFamily = AF_INET;
++		} else if (!strcmp(argv[i], "-6")) {
++			i++;
++			socketFamily = AF_INET6;
++		}
++	}
++	in_addr multicastSource;
++	multicastSource.s_addr = 0;
++	if (argc > i) {
++		if (!strcmp(argv[i], "-s")) {
++			++i;
++			if (inet_aton(argv[i], &multicastSource) == 0) {
++				fprintf(stderr, "IPv4 source address expected");
++				return -1;
++			}
++			++i;
++		}
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++		sa->sin_addr.s_addr = htonl(INADDR_ALLHOSTS_GROUP);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		// ff01::1 (all nodes multicast)
++		sa->sin6_addr.s6_addr[0] = 0xff;
++		sa->sin6_addr.s6_addr[1] = 0x01;
++		sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	if (multicastSource.s_addr) {
++		if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF,
++				&multicastSource, sizeof(multicastSource)) < 0) {
++			perror("setsockopt IP_MULTICAST_IF");
++			return -1;
++		}
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/Jamfile
+===================================================================
+--- src/tests/kits/net/ipv6/Jamfile	(revision 0)
++++ src/tests/kits/net/ipv6/Jamfile	(revision 0)
+@@ -0,0 +1,12 @@
++SubDir HAIKU_TOP src tests kits net ipv6 ;
++
++SimpleTest raw_server : raw_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest raw_client : raw_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest udp_server : udp_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest udp_client : udp_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest tcp_udp_server : tcp_udp_server.cpp : $(TARGET_NETWORK_LIBS) ;
++SimpleTest tcp_udp_client : tcp_udp_client.cpp : $(TARGET_NETWORK_LIBS) ;
++
++SimpleTest multicast_sender : multicast_sender.cpp : $(TARGET_NETWORK_LIBS) ;
+Index: src/tests/kits/net/ipv6/udp_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/udp_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/udp_client.cpp	(revision 0)
+@@ -0,0 +1,72 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_DGRAM, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_port = htons(TEST_PORT);
++		sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_port = htons(TEST_PORT);
++		sa->sin6_addr.s6_addr[15] = 0x01; // loopback
++
++		// 2001::1
++		// sa->sin6_addr.s6_addr[0] = 0x20;
++		// sa->sin6_addr.s6_addr[1] = 0x01;
++		// sa->sin6_addr.s6_addr[15] = 0x01;
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/raw_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/raw_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/raw_client.cpp	(revision 0)
+@@ -0,0 +1,65 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PROTOCOL = 89;
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketFamily = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "-4"))
++			socketFamily = AF_INET;
++		else if (!strcmp(argv[1], "-6"))
++			socketFamily = AF_INET6;
++	}
++
++	int fd = socket(socketFamily, SOCK_RAW, TEST_PROTOCOL);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	if (socketFamily == AF_INET) {
++		sockaddr_in *sa = (sockaddr_in *) &saddr;
++		sa->sin_family = AF_INET;
++		sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	} else {
++		sockaddr_in6 *sa = (sockaddr_in6 *) &saddr;
++		sa->sin6_family = AF_INET6;
++		sa->sin6_addr.s6_addr[15] = 0x01; // loopback
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = sendto(fd, buffer, length, 0, (sockaddr *) &saddr,
++		socketFamily == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
++	if (status < length) {
++		if (status < 0)
++			perror("sendto");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++
++	close(fd);
++	return 0;
++}
+Index: src/tests/kits/net/ipv6/tcp_udp_client.cpp
+===================================================================
+--- src/tests/kits/net/ipv6/tcp_udp_client.cpp	(revision 0)
++++ src/tests/kits/net/ipv6/tcp_udp_client.cpp	(revision 0)
+@@ -0,0 +1,98 @@
++/*
++ * Copyright 2010, Atis Elsts, the.kfx@gmail.com
++ * Distributed under the terms of the MIT license.
++ */
++
++
++#include <unistd.h>
++#include <memory.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++
++const unsigned short TEST_PORT = 40000;
++
++
++void
++usage()
++{
++	printf("client [tcp|udp] [4|6] [4|6]\n");
++	exit(1);
++}
++
++
++int
++main(int argc, char *argv[])
++{
++	int socketType = SOCK_DGRAM;
++	int socketFamily1 = AF_INET;
++	int socketFamily2 = AF_INET;
++
++	if (argc > 1) {
++		if (!strcmp(argv[1], "tcp"))
++			socketType = SOCK_STREAM;
++		else if (!strcmp(argv[1], "udp"))
++			socketType = SOCK_DGRAM;
++		else
++			usage();
++	}
++	if (argc > 2) {
++		switch (atoi(argv[2])) {
++		case 4:
++			socketFamily1 = AF_INET;
++			break;
++		case 6:
++			socketFamily1 = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++	if (argc > 3) {
++		switch (atoi(argv[3])) {
++		case 4:
++			socketFamily2 = AF_INET;
++			break;
++		case 6:
++			socketFamily2 = AF_INET6;
++			break;
++		default:
++			usage();
++		}
++	}
++
++	int fd = socket(socketFamily1, socketType, 0);
++	if (fd < 0) {
++		perror("socket");
++		return -1;
++	}
++
++	sockaddr_storage saddr;
++	memset(&saddr, 0, sizeof(saddr));
++	saddr.ss_family = socketFamily2;
++	((sockaddr_in *) &saddr)->sin_port = htons(TEST_PORT);
++	if (connect(fd, (sockaddr *) &saddr, socketFamily2 == AF_INET ?
++			sizeof(sockaddr_in) : sizeof(sockaddr_in6)) < 0) {
++		perror("connect");
++		close(fd);
++		return -1;
++	}
++
++	const char *buffer = "hello world";
++	unsigned length = strlen(buffer);
++	int status = send(fd, buffer, length, 0);
++	if (status < length) {
++		if (status < 0)
++			perror("send");
++		else if (status == 0)
++			printf("no data sent!\n");
++		else
++			printf("not all data sent!\n");
++	} else
++		printf("send(): success\n");
++	close(fd);
++	return 0;
++}
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp	(revision 37980)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6.cpp	(working copy)
+@@ -11,7 +11,7 @@
+ #include "ipv6_address.h"
+ #include "ipv6_utils.h"
+ #include "multicast.h"
+-#include "../../stack/domains.h"
++//#include "../../stack/domains.h"
+ 
+ #include <net_datalink.h>
+ #include <net_datalink_protocol.h>
+@@ -105,7 +105,7 @@
+ 	uint8		multicast_time_to_live;
+ 	uint8		receive_hoplimit;
+ 	uint8		receive_pktinfo;
+-	struct sockaddr* interface_address; // for IPV6_MULTICAST_IF
++	struct sockaddr* multicast_address; // for IPV6_MULTICAST_IF
+ 
+ 	IPv6MulticastFilter multicast_filter;
+ };
+@@ -237,11 +237,11 @@
+ 	MutexLocker _(sMulticastGroupsLock);
+ 
+ 	status_t status = B_OK;
+-	if (buffer->interface) {
++	if (buffer->interface_address) {
+ 		status = deliver_multicast(module, buffer, deliverToRaw,
+-			buffer->interface);
++			buffer->interface_address->interface);
+ 	} else {
+-		// REVIEWME: does this look ok?
++#if 0 //  FIXME: multicast
+ 		net_domain_private* domain = (net_domain_private*)sDomain;
+ 		RecursiveLocker locker(domain->lock);
+ 
+@@ -256,6 +256,7 @@
+ 			if (status < B_OK)
+ 				break;
+ 		}
++#endif
+ 	}
+ 	return status;
+ }
+@@ -280,7 +281,7 @@
+ 			RawSocket* raw = iterator.Next();
+ 
+ 			if (raw->Socket()->protocol == buffer->protocol)
+-				raw->SocketEnqueue(buffer);
++				raw->EnqueueClone(buffer);
+ 		}
+ 	}
+ }
+@@ -305,11 +306,8 @@
+ 	MutexLocker _(sMulticastGroupsLock);
+ 
+ 	sockaddr_in6 groupAddr;
+-	net_interface* interface = state->Interface();
+-
+-	status_t status = interface->first_info->join_multicast(
+-		interface->first_protocol,
+-		fill_sockaddr_in6(&groupAddr, state->Address()));
++	status_t status = sDatalinkModule->join_multicast(state->Interface(),
++		sDomain, fill_sockaddr_in6(&groupAddr, state->Address()));
+ 	if (status != B_OK)
+ 		return status;
+ 
+@@ -326,10 +324,7 @@
+ 	sMulticastState->Remove(state);
+ 
+ 	sockaddr_in6 groupAddr;
+-	net_interface* interface = state->Interface();
+-
+-	return interface->first_protocol->module->join_multicast(
+-		interface->first_protocol,
++	return sDatalinkModule->leave_multicast(state->Interface(), sDomain,
+ 		fill_sockaddr_in6(&groupAddr, state->Address()));
+ }
+ 
+@@ -460,7 +455,7 @@
+ 	protocol->multicast_time_to_live = kDefaultMulticastTTL;
+ 	protocol->receive_hoplimit = 0;
+ 	protocol->receive_pktinfo = 0;
+-	protocol->interface_address = NULL;
++	protocol->multicast_address = NULL;
+ 	return protocol;
+ }
+ 
+@@ -471,7 +466,7 @@
+ 	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
+ 
+ 	delete protocol->raw;
+-	delete protocol->interface_address;
++	delete protocol->multicast_address;
+ 	delete protocol;
+ 	return B_OK;
+ }
+@@ -618,21 +613,21 @@
+ 			// Using the unspecifed address to remove the previous setting.
+ 			if (IN6_IS_ADDR_UNSPECIFIED(&address->sin6_addr)) {
+ 				delete address;
+-				delete protocol->interface_address;
+-				protocol->interface_address = NULL;
++				delete protocol->multicast_address;
++				protocol->multicast_address = NULL;
+ 				return B_OK;
+ 			}
+ 
+ 			struct net_interface* interface
+-				= sDatalinkModule->get_interface_with_address(sDomain,
+-					(struct sockaddr*)address);
++				= sDatalinkModule->get_interface_with_address(
++					(sockaddr*)address);
+ 			if (interface == NULL) {
+ 				delete address;
+ 				return EADDRNOTAVAIL;
+ 			}
+ 
+-			delete protocol->interface_address;
+-			protocol->interface_address = (struct sockaddr*)address;
++			delete protocol->multicast_address;
++			protocol->multicast_address = (struct sockaddr*)address;
+ 			return B_OK;
+ 		}
+ 		if (option == IPV6_MULTICAST_HOPS) {
+@@ -743,7 +738,7 @@
+ 		return B_BAD_VALUE;
+ 
+ 	ipv6_protocol* protocol = (ipv6_protocol*)_protocol;
+-	net_interface* interface = route->interface;
++	net_interface* interface = route->interface_address->interface;
+ 	uint8 protocolNumber;
+ 	if (protocol != NULL && protocol->socket != NULL)
+ 		protocolNumber = protocol->socket->protocol;
+@@ -817,12 +812,11 @@
+ 
+ 	uint32 mtu = route->mtu ? route->mtu : interface->mtu;
+ 	if (buffer->size > mtu) {
+-		// we need to fragment the packet
+-		return EMSGSIZE; // TODO
+-		//return send_fragments(protocol, route, buffer, mtu);
++		// TODO: we need to fragment the packet
++		return EMSGSIZE;
+ 	}
+ 
+-	return sDatalinkModule->send_data(route, buffer);
++	return sDatalinkModule->send_routed_data(route, buffer);
+ }
+ 
+ 
+@@ -837,24 +831,26 @@
+ 
+ 	// handle IPV6_MULTICAST_IF
+ 	if (IN6_IS_ADDR_MULTICAST(&destination->sin6_addr)
+-			&& protocol->interface_address != NULL) {
+-		net_interface* interface
+-			= sDatalinkModule->get_interface_with_address(sDomain,
+-				protocol->interface_address);
+-		if (interface == NULL || (interface->flags & IFF_UP) == 0)
++		&& protocol->multicast_address != NULL) {
++		net_interface_address* address = sDatalinkModule->get_interface_address(
++			protocol->multicast_address);
++ 		if (address == NULL || (address->interface->flags & IFF_UP) == 0) {
++			sDatalinkModule->put_interface_address(address);
+ 			return EADDRNOTAVAIL;
++		}
+ 
+-		buffer->interface = interface;
++		sDatalinkModule->put_interface_address(buffer->interface_address);
++		buffer->interface_address = address;
++			// the buffer takes over ownership of the address
+ 
+-		net_route* route = sDatalinkModule->get_route(sDomain,
+-			interface->address);
++		net_route* route = sDatalinkModule->get_route(sDomain, address->local);
+ 		if (route == NULL)
+ 			return ENETUNREACH;
+ 
+-		return sDatalinkModule->send_data(route, buffer);
++		return sDatalinkModule->send_routed_data(route, buffer);
+ 	}
+ 
+-	return sDatalinkModule->send_datagram(protocol, sDomain, buffer);
++	return sDatalinkModule->send_data(protocol, sDomain, buffer);
+ }
+ 
+ 
+@@ -876,7 +872,7 @@
+ 
+ 	TRACE_SK(protocol, "ReadData(%lu, 0x%lx)", numBytes, flags);
+ 
+-	return raw->SocketDequeue(flags, _buffer);
++	return raw->Dequeue(flags, _buffer);
+ }
+ 
+ 
+@@ -910,7 +906,7 @@
+ 	if (route->mtu != 0)
+ 		mtu = route->mtu;
+ 	else
+-		mtu = route->interface->mtu;
++		mtu = route->interface_address->interface->mtu;
+ 
+ 	sDatalinkModule->put_route(sDomain, route);
+ 	// TODO: what about extension headers?
+@@ -947,18 +943,25 @@
+ 	if (IN6_IS_ADDR_MULTICAST(&destination.sin6_addr)) {
+ 		buffer->flags |= MSG_MCAST;
+ 	} else {
++		uint32 matchedAddressType = 0;
++
+ 		// test if the packet is really for us
+ 		if (!sDatalinkModule->is_local_address(sDomain, (sockaddr*)&destination,
+-				&buffer->interface, NULL)
++				&buffer->interface_address, &matchedAddressType)
+ 			&& !sDatalinkModule->is_local_link_address(sDomain, true,
+-				buffer->destination, &buffer->interface)) {
++				buffer->destination, &buffer->interface_address)) {
+ 			char srcbuf[INET6_ADDRSTRLEN];
+ 			char dstbuf[INET6_ADDRSTRLEN];
+-			TRACE("  ReceiveData(): packet was not for us %s -> %s",
++			TRACE("  ipv4_receive_data(): packet was not for us %s -> %s",
+ 				ip6_sprintf(&header.Src(), srcbuf),
+ 				ip6_sprintf(&header.Dst(), dstbuf));
++	
++			// TODO: Send ICMPv6 error: Host unreachable
+ 			return B_ERROR;
+ 		}
++
++		// copy over special address types (MSG_BCAST or MSG_MCAST):
++		buffer->flags |= matchedAddressType;
+ 	}
+ 
+ 	// set net_buffer's source/destination address
+@@ -981,8 +984,6 @@
+ 	// tell the buffer to preserve removed ipv6 header - may need it later
+ 	gBufferModule->store_header(buffer);
+ 
+-	TRACE("store_header for %p\n", buffer);
+-
+ 	// remove ipv6 headers for now
+ 	gBufferModule->remove_header(buffer, transportHeaderOffset);
+ 
+@@ -996,7 +997,7 @@
+ 	}
+ 
+ 	if ((buffer->flags & MSG_MCAST) != 0) {
+-		// Unfortunely historical reasons dictate that the IP multicast
++		// Unfortunately historical reasons dictate that the IP multicast
+ 		// model be a little different from the unicast one. We deliver
+ 		// this frame directly to all sockets registered with interest
+ 		// for this multicast group.
+@@ -1015,7 +1016,7 @@
+ 	if (protocol->raw == NULL)
+ 		return B_ERROR;
+ 
+-	return protocol->raw->SocketEnqueue(buffer);
++	return protocol->raw->EnqueueClone(buffer);
+ }
+ 
+ 
+@@ -1047,26 +1048,26 @@
+ 		if (msgControlLen < CMSG_SPACE(sizeof(int)))
+ 			return B_NO_MEMORY;
+ 
+-		TRACE("restore_header for %p\n", buffer);
++		// '255' is the default value to use when extracting the real one fails
++		int hoplimit = 255;
+ 
+ 		if (gBufferModule->stored_header_length(buffer)
+-				< (int)sizeof(ip6_hdr))
+-			return B_ERROR;
++			>= (int)sizeof(ip6_hdr)) {
+ 
+-		IPv6Header header;
+-		if (gBufferModule->restore_header(buffer, 0, &header, sizeof(ip6_hdr))
+-				!= B_OK)
+-			return B_ERROR;
++			IPv6Header header;
++			if (gBufferModule->restore_header(buffer, 0,
++					&header, sizeof(ip6_hdr)) == B_OK
++				&& header.ProtocolVersion() != IPV6_VERSION) {
++				// header is OK, take hoplimit from it
++				hoplimit = header.header.ip6_hlim;
++			}
++		}
+ 
+-		if (header.ProtocolVersion() != IPV6_VERSION)
+-			return B_ERROR;
+-
+ 		cmsghdr* messageHeader = (cmsghdr*)((char*)msgControl + bytesWritten);
+ 		messageHeader->cmsg_len = CMSG_LEN(sizeof(int));
+ 		messageHeader->cmsg_level = IPPROTO_IPV6;
+ 		messageHeader->cmsg_type = IPV6_HOPLIMIT;
+ 
+-		int hoplimit = header.header.ip6_hlim;
+ 		memcpy(CMSG_DATA(messageHeader), &hoplimit, sizeof(int));
+ 
+ 		bytesWritten += CMSG_SPACE(sizeof(int));
+@@ -1088,8 +1089,11 @@
+ 		memcpy(&pi.ipi6_addr,
+ 			&((struct sockaddr_in6*)buffer->destination)->sin6_addr,
+ 		 	sizeof(struct in6_addr));
+-		// REVIEWME: assume buffer->interface cannot be NULL
+-		pi.ipi6_ifindex = buffer->interface->index;
++		if (buffer->interface_address != NULL
++			&& buffer->interface_address->interface != NULL)
++			pi.ipi6_ifindex = buffer->interface_address->interface->index;
++		else
++			pi.ipi6_ifindex = 0;
+ 		memcpy(CMSG_DATA(messageHeader), &pi, sizeof(struct in6_pktinfo));
+ 
+ 		bytesWritten += CMSG_SPACE(sizeof(struct in6_pktinfo));
+Index: src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp	(revision 37980)
++++ src/add-ons/kernel/network/protocols/ipv6/ipv6_address.cpp	(working copy)
+@@ -455,7 +455,7 @@
+ 
+ static status_t
+ ipv6_set_to_defaults(sockaddr *_defaultMask, sockaddr *_defaultBroadcast,
+-	sockaddr *_address, sockaddr *_mask)
++	const sockaddr *_address, const sockaddr *_mask)
+ {
+ 	sockaddr_in6 *defaultMask = (sockaddr_in6 *)_defaultMask;
+ 	sockaddr_in6 *address = (sockaddr_in6 *)_address;
+Index: src/add-ons/kernel/network/protocols/udp/udp.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/udp/udp.cpp	(revision 37980)
++++ src/add-ons/kernel/network/protocols/udp/udp.cpp	(working copy)
+@@ -1349,7 +1349,6 @@
+ 	return B_OK;
+ 
+ err1:
+-	// TODO: shouldn't unregister the protocols here?
+ 	delete sUdpEndpointManager;
+ 
+ 	TRACE_EPM("init_udp() fails with %lx (%s)", status, strerror(status));
+Index: src/add-ons/kernel/network/protocols/icmp6/icmp6.cpp
+===================================================================
+--- src/add-ons/kernel/network/protocols/icmp6/icmp6.cpp	(revision 37980)
++++ src/add-ons/kernel/network/protocols/icmp6/icmp6.cpp	(working copy)
+@@ -199,11 +199,31 @@
+ }
+ 
+ 
++static net_domain*
++get_domain(struct net_buffer* buffer)
++{
++	net_domain* domain;
++	if (buffer->interface_address != NULL)
++		domain = buffer->interface_address->domain;
++	else
++		domain = sStackModule->get_domain(buffer->source->sa_family);
++
++	if (domain == NULL || domain->module == NULL)
++		return NULL;
++
++	return domain;
++}
++
++
+ status_t
+ icmp6_receive_data(net_buffer *buffer)
+ {
+ 	TRACE(("ICMPv6 received some data, buffer length %lu\n", buffer->size));
+ 
++	net_domain* domain = get_domain(buffer);
++	if (domain == NULL)
++		return B_ERROR;
++
+ 	NetBufferHeaderReader<icmp6_hdr> bufferHeader(buffer);
+ 	if (bufferHeader.Status() < B_OK)
+ 		return bufferHeader.Status();
+@@ -213,16 +233,6 @@
+ 	TRACE(("  got type %u, code %u, checksum 0x%x\n", header.icmp6_type,
+ 			header.icmp6_code, header.icmp6_cksum));
+ 
+-	net_domain* domain;
+-	if (buffer->interface != NULL)
+-		domain = buffer->interface->domain;
+-	else
+-		domain = sStackModule->get_domain(buffer->source->sa_family);
+-
+-	// TODO: possible?
+-	if (domain == NULL || domain->module == NULL)
+-		return B_ERROR;
+-
+ 	net_address_module_info* addressModule = domain->address_module;
+ 
+ 	// compute and check the checksum
+@@ -236,11 +246,11 @@
+ 
+ 		case ICMP6_ECHO_REQUEST:
+ 		{
+-			if (buffer->interface != NULL) {
++			if (buffer->interface_address != NULL) {
+ 				// We only reply to echo requests of our local interface; we
+ 				// don't reply to broadcast requests
+ 				if (!domain->address_module->equal_addresses(
+-						buffer->interface->address, buffer->destination))
++						buffer->interface_address->local, buffer->destination))
+ 					break;
+ 			}
+ 
+@@ -288,15 +298,15 @@
+ 
+ 
+ status_t
+-icmp6_error(uint32 code, net_buffer *data)
++icmp6_error_received(net_error code, net_buffer* data)
+ {
+-	return B_ERROR;
++ 	return B_ERROR;
+ }
+ 
+ 
+ status_t
+-icmp6_error_reply(net_protocol *protocol, net_buffer *causedError, uint32 code,
+-	void *errorData)
++icmp6_error_reply(net_protocol* protocol, net_buffer* buffer, net_error error,
++	net_error_data* errorData)
+ {
+ 	return B_ERROR;
+ }
+@@ -367,7 +377,7 @@
+ 	icmp6_get_mtu,
+ 	icmp6_receive_data,
+ 	icmp6_deliver_data,
+-	icmp6_error,
++	icmp6_error_received,
+ 	icmp6_error_reply,
+ 	NULL,		// add_ancillary_data()
+ 	NULL,		// process_ancillary_data()
+Index: src/add-ons/kernel/network/stack/net_buffer.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/net_buffer.cpp	(revision 37980)
++++ src/add-ons/kernel/network/stack/net_buffer.cpp	(working copy)
+@@ -1237,6 +1237,8 @@
+ 
+ 	copy_metadata(clone, buffer);
+ 	ASSERT(clone->size == buffer->size);
++	((net_buffer_private*)clone)->stored_header_length
++		= buffer->stored_header_length;
+ 
+ 	return clone;
+ 
+@@ -1972,7 +1974,7 @@
+ 		clone->offset = buffer->size;
+ 		clone->start = node->start + offset;
+ 		clone->used = min_c(bytes, node->used - offset);
+-		clone->flags |= DATA_NODE_READ_ONLY;
++		clone->flags = node->flags | DATA_NODE_READ_ONLY;
+ 
+ 		list_add_item(&buffer->buffers, clone);
+ 
+Index: src/add-ons/kernel/network/stack/interfaces.cpp
+===================================================================
+--- src/add-ons/kernel/network/stack/interfaces.cpp	(revision 37980)
++++ src/add-ons/kernel/network/stack/interfaces.cpp	(working copy)
+@@ -1191,7 +1191,8 @@
+ 	if (status == B_OK) {
+ 		sockaddr* address = *_address;
+ 
+-		if (option == SIOCSIFADDR || option == SIOCSIFNETMASK) {
++		// TODO: what was intended here?
++		if (option == SIOCSIFADDR/* || option == SIOCSIFNETMASK*/) {
+ 			// Reset netmask and broadcast addresses to defaults
+ 			net_domain* domain = interfaceAddress->domain;
+ 			sockaddr* netmask = NULL;
+Index: src/add-ons/kernel/network/datalink_protocols/loopback_frame/loopback_frame.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/loopback_frame/loopback_frame.cpp	(revision 37980)
++++ src/add-ons/kernel/network/datalink_protocols/loopback_frame/loopback_frame.cpp	(working copy)
+@@ -65,8 +65,10 @@
+ 	// We also register the domain as a handler for our packets
+ 	status = stack->register_domain_device_handler(interface->device, 0,
+ 		domain);
++#if 0 // FIXME
+ 	if (status != B_OK)
+ 		goto err2;
++#endif
+ 
+ 	put_module(NET_STACK_MODULE_NAME);
+ 
+Index: src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp
+===================================================================
+--- src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp	(revision 37980)
++++ src/add-ons/kernel/network/datalink_protocols/ipv6_datagram/ipv6_datagram.cpp	(working copy)
+@@ -28,7 +28,7 @@
+ #include <net/if.h>
+ #include <net/if_types.h>
+ #include <net/if_dl.h>
+-
++#include <sys/sockio.h>
+ #include <new>
+ 
+ #include <ipv6/jenkins.h>
+@@ -46,6 +46,7 @@
+ 
+ struct ipv6_datalink_protocol : net_datalink_protocol {
+ 	sockaddr_dl	hardware_address;
++	in6_addr	local_address;
+ };
+ 
+ 
+@@ -54,8 +55,9 @@
+ 
+ net_buffer_module_info* gBufferModule;
+ static net_stack_module_info* sStackModule;
++static net_datalink_module_info* sDatalinkModule;
+ static net_protocol_module_info* sIPv6Module;
+-net_protocol* sIPv6Protocol;
++static net_protocol* sIPv6Protocol;
+ static hash_table* sCache;
+ static mutex sCacheLock;
+ static const net_buffer* kDeletedBuffer = (net_buffer*)~0;
+@@ -75,7 +77,7 @@
+ 	in6_addr	target_address;
+ 
+ 	// This part is specific for Ethernet;
+-	// also, the could be more than one option in theory.
++	// also, theoretically there could be more than one option.
+ 	uint8		option_type;
+ 	uint8		option_length;
+ 	uint8		link_address[ETHER_ADDRESS_LENGTH];
+@@ -499,25 +501,116 @@
+ }
+ 
+ 
+-/*!	Creates a permanent local entry for the interface belonging to this protocol.
+-	You need to hold the cache lock when calling this function.
++static void
++ndp_remove_local_entry(ipv6_datalink_protocol* protocol, const sockaddr* local,
++	bool updateLocalAddress)
++{
++	in6_addr inetAddress;
++
++	if (local == NULL) {
++		// interface has not yet been set
++		memset(&inetAddress, 0, sizeof(in6_addr));
++	} else {
++		memcpy(&inetAddress,
++			&((sockaddr_in6*)local)->sin6_addr,
++			sizeof(in6_addr));
++
++		// leave the NS multicast address
++		sockaddr_in6 multicast;
++		ipv6_to_solicited_multicast(&multicast, inetAddress);
++
++		struct ipv6_mreq mreq;
++		memcpy(&mreq.ipv6mr_multiaddr, &multicast.sin6_addr, sizeof(in6_addr));
++		mreq.ipv6mr_interface = protocol->interface->index;
++
++		if (sIPv6Protocol != NULL) {
++			sIPv6Module->setsockopt(sIPv6Protocol, IPPROTO_IPV6,
++				IPV6_LEAVE_GROUP, &mreq, sizeof(mreq));
++		}
++	}
++
++	// TRACE(("%s(): address %s\n", __FUNCTION__, inet6_to_string(inetAddress)));
++
++	MutexLocker locker(sCacheLock);
++
++	ndp_entry* entry = ndp_entry::Lookup(inetAddress);
++	if (entry != NULL) {
++		hash_remove(sCache, entry);
++		entry->flags |= NDP_FLAG_REMOVED;
++	}
++
++	if (updateLocalAddress && protocol->local_address == inetAddress) {
++		// find new local sender address
++		memset(&protocol->local_address, 0, sizeof(in6_addr));
++
++		net_interface_address* address = NULL;
++		while (sDatalinkModule->get_next_interface_address(protocol->interface,
++				&address)) {
++			if (address->local == NULL || address->local->sa_family != AF_INET6)
++				continue;
++
++			memcpy(&protocol->local_address,
++				&((sockaddr_in6*)address->local)->sin6_addr, sizeof(in6_addr));
++		}
++	}
++
++	locker.Unlock();
++	delete entry;
++}
++
++
++/*!	Removes all entries belonging to the local interface of the \a procotol
++	given.
+ */
++static void
++ndp_remove_local(ipv6_datalink_protocol* protocol)
++{
++	net_interface_address* address = NULL;
++	while (sDatalinkModule->get_next_interface_address(protocol->interface,
++			&address)) {
++		if (address->local == NULL || address->local->sa_family != AF_INET6)
++			continue;
++
++		ndp_remove_local_entry(protocol, address->local, false);
++	}
++}
++
++
+ static status_t
+-ndp_update_local(ipv6_datalink_protocol* protocol)
++ndp_set_local_entry(ipv6_datalink_protocol* protocol, const sockaddr* local)
+ {
+-	ASSERT_LOCKED_MUTEX(&sCacheLock);
++	MutexLocker locker(sCacheLock);
+ 
+ 	net_interface* interface = protocol->interface;
+-	in6_addr inet6Address;
++	in6_addr inetAddress;
+ 
+-	if (interface->address == NULL) {
++	if (local == NULL) {
+ 		// interface has not yet been set
+-		memset(&inet6Address, 0, sizeof(in6_addr));
++		memset(&inetAddress, 0, sizeof(in6_addr));
+ 	} else {
+-		memcpy(&inet6Address,
+-			&((sockaddr_in6*)interface->address)->sin6_addr, sizeof(in6_addr));
++		memcpy(&inetAddress,
++			&((sockaddr_in6*)local)->sin6_addr,
++			sizeof(in6_addr));
++
++		// join multicast address for listening to NS packets
++		sockaddr_in6 multicast;
++		ipv6_to_solicited_multicast(&multicast, inetAddress);
++
++		struct ipv6_mreq mreq;
++		memcpy(&mreq.ipv6mr_multiaddr, &multicast.sin6_addr, sizeof(in6_addr));
++		mreq.ipv6mr_interface = protocol->interface->index;
++
++		if (sIPv6Protocol != NULL) {
++			sIPv6Module->setsockopt(sIPv6Protocol, IPPROTO_IPV6,
++				IPV6_JOIN_GROUP, &mreq, sizeof(mreq));
++		}
+ 	}
+ 
++	// TRACE(("%s(): address %s\n", __FUNCTION__, inet6_to_string(inetAddress)));
++
++	if (IN6_IS_ADDR_UNSPECIFIED(&protocol->local_address))
++		memcpy(&protocol->local_address, &inetAddress, sizeof(in6_addr));
++
+ 	sockaddr_dl address;
+ 	address.sdl_len = sizeof(sockaddr_dl);
+ 	address.sdl_family = AF_LINK;
+@@ -532,7 +625,7 @@
+ 		// cache the address in our protocol
+ 
+ 	ndp_entry* entry;
+-	status_t status = ndp_update_entry(inet6Address, &address,
++	status_t status = ndp_update_entry(inetAddress, &address,
+ 		NDP_FLAG_LOCAL | NDP_FLAG_PERMANENT, &entry);
+ 	if (status == B_OK)
+ 		entry->protocol = protocol;
+@@ -541,7 +634,36 @@
+ }
+ 
+ 
++/*!	Creates permanent local entries for all addresses of the interface belonging
++	to this protocol.
++	Returns an error if no entry could be added.
++*/
+ static status_t
++ndp_update_local(ipv6_datalink_protocol* protocol)
++{
++	memset(&protocol->local_address, 0, sizeof(in6_addr));
++
++	ssize_t count = 0;
++
++	net_interface_address* address = NULL;
++	while (sDatalinkModule->get_next_interface_address(protocol->interface,
++			&address)) {
++		if (address->local == NULL || address->local->sa_family != AF_INET6)
++			continue;
++
++		if (ndp_set_local_entry(protocol, address->local) == B_OK) {
++			count++;
++		}
++	}
++
++	if (count == 0)
++		return ndp_set_local_entry(protocol, NULL);
++
++	return B_OK;
++}
++
++
++static status_t
+ ndp_receive_solicitation(net_buffer* buffer, bool* reuseBuffer)
+ {
+ 	*reuseBuffer = false;
+@@ -778,7 +900,7 @@
+ 
+ 
+ static status_t
+-ndp_start_resolve(net_datalink_protocol* protocol, const in6_addr& address,
++ndp_start_resolve(ipv6_datalink_protocol* protocol, const in6_addr& address,
+ 	ndp_entry** _entry)
+ {
+ 	ASSERT_LOCKED_MUTEX(&sCacheLock);
+@@ -808,8 +930,9 @@
+ 
+ 	// prepare source and target addresses
+ 
+- 	sockaddr_in6* source = (sockaddr_in6*)buffer->source;
+-	ipv6_to_sockaddr(source, ((sockaddr_in6*)interface->address)->sin6_addr);
++	sockaddr_in6* source = (sockaddr_in6*)buffer->source;
++	ipv6_to_sockaddr(source, protocol->local_address);
++	// protocol->local_address
+ 
+ 	sockaddr_in6* destination = (sockaddr_in6*)buffer->destination;
+ 	ipv6_to_solicited_multicast(destination, address);
+@@ -868,30 +991,25 @@
+ 
+ 
+ static status_t
+-ipv6_datalink_init(net_interface* interface, net_datalink_protocol** _protocol)
++ipv6_datalink_init(net_interface* interface, net_domain* domain,
++	net_datalink_protocol** _protocol)
+ {
+-	if (interface->domain->family != AF_INET6)
++	if (domain->family != AF_INET6)
+ 		return B_BAD_TYPE;
+ 
+-	// While the loopback doesn't get a header to mux protocols,
+-	// we let it do all of the registration work.
+-	if (interface->device->type == IFT_LOOP)
+-		return B_BAD_TYPE;
++	status_t status = sStackModule->register_domain_device_handler(
++		interface->device, B_NET_FRAME_TYPE(IFT_ETHER, ETHER_TYPE_IPV6), domain);
++	if (status != B_OK)
++		return status;
+ 
+ 	ipv6_datalink_protocol* protocol = new(std::nothrow) ipv6_datalink_protocol;
+ 	if (protocol == NULL)
+ 		return B_NO_MEMORY;
+ 
+ 	memset(&protocol->hardware_address, 0, sizeof(sockaddr_dl));
+-
+-	status_t status = sStackModule->register_domain_device_handler(
+-		interface->device, B_NET_FRAME_TYPE_IPV6, interface->domain);
+-	if (status != B_OK)
+-		delete protocol;
+-	else
+-		*_protocol = protocol;
+-
+-	return status;
++	memset(&protocol->local_address, 0, sizeof(in6_addr));
++	*_protocol = protocol;
++	return B_OK;
+ }
+ 
+ 
+@@ -899,9 +1017,10 @@
+ ipv6_datalink_uninit(net_datalink_protocol* protocol)
+ {
+ 	sStackModule->unregister_device_handler(protocol->interface->device,
+-		B_NET_FRAME_TYPE_IPV6);
++		B_NET_FRAME_TYPE(IFT_ETHER, ETHER_TYPE_IPV6));
++
+ 	delete protocol;
+-	return B_OK;
++ 	return B_OK;
+ }
+ 
+ 
+@@ -950,136 +1069,87 @@
+ }
+ 
+ 
++
+ static status_t
+ ipv6_datalink_up(net_datalink_protocol* _protocol)
+ {
+ 	ipv6_datalink_protocol* protocol = (ipv6_datalink_protocol*)_protocol;
+ 	status_t status = protocol->next->module->interface_up(protocol->next);
+-	if (status < B_OK)
++	if (status != B_OK)
+ 		return status;
+ 
+-	// join multicast address for listening to NS packets
+-
+-	// REVIEWME: can I rely on this function being called every time
+-	// when interfae address changes?
+-
+-	if (protocol->interface->address != NULL) {
+-		sockaddr_in6& address = *(sockaddr_in6*)protocol->interface->address;
+-		sockaddr_in6 multicast;
+-		ipv6_to_solicited_multicast(&multicast, address.sin6_addr);
+-
+-		struct ipv6_mreq mreq;
+-		memcpy(&mreq.ipv6mr_multiaddr, &multicast.sin6_addr, sizeof(in6_addr));
+-		mreq.ipv6mr_interface = protocol->interface->index;
+-
+-		if (sIPv6Protocol != NULL) {
+-			sIPv6Module->setsockopt(sIPv6Protocol, IPPROTO_IPV6,
+-				IPV6_JOIN_GROUP, &mreq, sizeof(mreq));
+-		}
+-	}
+-
+ 	// cache this device's address for later use
+ 
+-	mutex_lock(&sCacheLock);
+ 	status = ndp_update_local(protocol);
+-	mutex_unlock(&sCacheLock);
+-
+-	if (status < B_OK) {
++	if (status != B_OK) {
+ 		protocol->next->module->interface_down(protocol->next);
+ 		return status;
+ 	}
++
++	return B_OK;
+ }
+ 
+ 
+ static void
+-ipv6_datalink_down(net_datalink_protocol* protocol)
++ipv6_datalink_down(net_datalink_protocol *protocol)
+ {
+-	// leave the NS multicast address
++	// remove local NDP entries from the cache
++	ndp_remove_local((ipv6_datalink_protocol*)protocol);
+ 
+-	// REVIEWME: can I rely on this function being called every time
+-	// when interface address changes?
+-
+-	if (protocol->interface->address != NULL) {
+-		sockaddr_in6& address = *(sockaddr_in6*)protocol->interface->address;
+-		sockaddr_in6 multicast;
+-		ipv6_to_solicited_multicast(&multicast, address.sin6_addr);
+-
+-		struct ipv6_mreq mreq;
+-		memcpy(&mreq.ipv6mr_multiaddr, &multicast.sin6_addr, sizeof(in6_addr));
+-		mreq.ipv6mr_interface = protocol->interface->index;
+-
+-		if (sIPv6Protocol != NULL) {
+-			sIPv6Module->setsockopt(sIPv6Protocol, IPPROTO_IPV6,
+-				IPV6_LEAVE_GROUP, &mreq, sizeof(mreq));
+-		}
+-	}
+-
+-	// remove local NDP entry from the cache
+-
+-	if (protocol->interface->address != NULL) {
+-		MutexLocker locker(sCacheLock);
+-
+-		ndp_entry* entry = ndp_entry::Lookup(
+-			((sockaddr_in6*)protocol->interface->address)->sin6_addr);
+-		if (entry != NULL) {
+-			hash_remove(sCache, entry);
+-			entry->flags |= NDP_FLAG_REMOVED;
+-			locker.Unlock();
+-
+-			delete entry;
+-		}
+-	}
+-
+ 	protocol->next->module->interface_down(protocol->next);
+ }
+ 
+ 
+ status_t
+-ipv6_datalink_change_address(net_datalink_protocol* protocol,
++ipv6_datalink_change_address(net_datalink_protocol* _protocol,
+ 	net_interface_address* address, int32 option,
+ 	const struct sockaddr* oldAddress, const struct sockaddr* newAddress)
+ {
+-#if 0
++	ipv6_datalink_protocol* protocol = (ipv6_datalink_protocol*)_protocol;
+ 	switch (option) {
+ 		case SIOCSIFADDR:
+ 		case SIOCAIFADDR:
+ 		case SIOCDIFADDR:
+ 			// Those are the options we handle
+ 			if ((protocol->interface->flags & IFF_UP) != 0) {
+-				// Update ARP entry for the local address
++				// Update NDP entry for the local address
+ 			
+ 				if (newAddress != NULL && newAddress->sa_family == AF_INET6) {
+-					status_t status = arp_set_local_entry(protocol, newAddress);
++					status_t status = ndp_set_local_entry(protocol, newAddress);
+ 					if (status != B_OK)
+ 						return status;
+ 
+-					// add IPv6 remove multicast route (ff00::/8)
+-					sockaddr_in6 address;
+-					memset(&address, 0, sizeof(sockaddr_in6));
+-					address.sin6_family = AF_INET6;
+-					address.sin6_len = sizeof(sockaddr_in6);
+-					address.sin6_addr.s6_addr[0] = 0xff;
+-			
+-					route.destination = (sockaddr*)&address;
+-					route.mask = (sockaddr*)&address;
++					// add IPv6 multicast route (ff00::/8)
++					sockaddr_in6 socketAddress;
++					memset(&socketAddress, 0, sizeof(sockaddr_in6));
++					socketAddress.sin6_family = AF_INET6;
++					socketAddress.sin6_len = sizeof(sockaddr_in6);
++					socketAddress.sin6_addr.s6_addr[0] = 0xff;
++
++					net_route route;
++					memset(&route, 0, sizeof(net_route));
++					route.destination = (sockaddr*)&socketAddress;
++					route.mask = (sockaddr*)&socketAddress;
+ 					route.flags = 0;
+-					add_route(interface->domain, &route);
++					sDatalinkModule->add_route(address->domain, &route);
+ 				}
+ 
+ 				if (oldAddress != NULL && oldAddress->sa_family == AF_INET6) {
+-					arp_remove_local_entry(protocol, oldAddress, true);
++					ndp_remove_local_entry(protocol, oldAddress, true);
+ 
+-					// remove IPv6 remove multicast route (ff00::/8)
+-					sockaddr_in6 address;
+-					memset(&address, 0, sizeof(sockaddr_in6));
+-					address.sin6_family = AF_INET6;
+-					address.sin6_len = sizeof(sockaddr_in6);
+-					address.sin6_addr.s6_addr[0] = 0xff;
+-			
+-					route.destination = (sockaddr*)&address;
+-					route.mask = (sockaddr*)&address;
++					// remove IPv6 multicast route (ff00::/8)
++					sockaddr_in6 socketAddress;
++					memset(&socketAddress, 0, sizeof(sockaddr_in6));
++					socketAddress.sin6_family = AF_INET6;
++					socketAddress.sin6_len = sizeof(sockaddr_in6);
++					socketAddress.sin6_addr.s6_addr[0] = 0xff;
++
++					net_route route;
++					memset(&route, 0, sizeof(net_route));			
++					route.destination = (sockaddr*)&socketAddress;
++					route.mask = (sockaddr*)&socketAddress;
+ 					route.flags = 0;
+-					remove_route(interface->domain, &route);
++					sDatalinkModule->remove_route(address->domain, &route);
+ 				}
+ 			}			
+ 			break;
+@@ -1087,7 +1157,6 @@
+ 		default:
+ 			break;
+ 	}
+-#endif
+ 
+ 	return protocol->next->module->change_address(protocol->next, address,
+ 		option, oldAddress, newAddress);
+@@ -1176,6 +1245,7 @@
+ 
+ module_dependency module_dependencies[] = {
+ 	{NET_STACK_MODULE_NAME, (module_info**)&sStackModule},
++	{NET_DATALINK_MODULE_NAME, (module_info**)&sDatalinkModule},
+ 	{NET_BUFFER_MODULE_NAME, (module_info**)&gBufferModule},
+ 	{"network/protocols/ipv6/v1", (module_info**)&sIPv6Module},
+ 	{}
+Index: src/bin/network/ping6/ping6.c
+===================================================================
+--- src/bin/network/ping6/ping6.c	(revision 37980)
++++ src/bin/network/ping6/ping6.c	(working copy)
+@@ -110,6 +110,7 @@
+ #include <netdb.h>
+ 
+ #include <ctype.h>
++#include <err.h>
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <math.h>
+@@ -273,38 +274,6 @@
+ void	 usage(void);
+ 
+ 
+-static void err(int exitval, char *where)
+-{
+-	printf("error: %s: error %d [%s]\n", where, errno, strerror(errno));
+-	exit(exitval);
+-}
+-
+-static void errx(int exitval, char *fmt_string, ...)
+-{
+-	va_list list;
+-	va_start(list, fmt_string);
+-	printf("error: ");
+-	vprintf(fmt_string, list);
+-	printf("\n");
+-	va_end(list);
+-	exit(exitval);
+-}
+-
+-static void warn(char *where)
+-{
+-	printf("warning: %s: error %d [%s]\n", where, errno, strerror(errno));
+-}
+-
+-static void warnx(char *fmt_string, ...)
+-{
+-	va_list list;
+-	va_start(list, fmt_string);
+-	printf("warning: ");
+-	vprintf(fmt_string, list);
+-	printf("\n");
+-}
+-
+-
+ int
+ main(argc, argv)
+ 	int argc;
+@@ -701,6 +670,10 @@
+ #endif
+ 	}
+ 
++	/* revoke root privilege */
++	seteuid(getuid());
++	setuid(getuid());
++
+ 	if ((options & F_FLOOD) && (options & F_INTERVAL))
+ 		errx(1, "-f and -i incompatible options");
+ 
+Index: src/bin/network/ping6/Jamfile
+===================================================================
+--- src/bin/network/ping6/Jamfile	(revision 37980)
++++ src/bin/network/ping6/Jamfile	(working copy)
+@@ -8,21 +8,12 @@
+ 		# Unfortunately we get more than we want, namely all POSIX headers.
+ }
+ 
++UseHeaders [ FDirName $(HAIKU_TOP) headers compatibility bsd ] : true ;
++
+ BinCommand ping6 :
+ 	ping6.c
+-	: $(TARGET_NETWORK_LIBS) $(TARGET_SELECT_UNAME_ETC_LIB) ;
++	: libbsd.so $(TARGET_NETWORK_LIBS) $(TARGET_SELECT_UNAME_ETC_LIB) ;
+ 
+-# Installation -- in the test directory for the time being
+-HaikuInstall install-networking
+-	: [ FDirName $(HAIKU_TEST_DIR) kits net ]
+-	: ping6 ;
+-
+-HaikuInstall install-userland-networking 
+-	: [ FDirName $(HAIKU_TEST_DIR) kits net userland ]
+-	: ping6
+-	: installed-userland-networking
+-;
+-
+ Package haiku-networkingkit-cvs :
+ 	ping6 :
+ 	boot home Desktop haiku-networkingkit ;
+Index: src/bin/network/ifconfig/ifconfig.cpp
+===================================================================
+--- src/bin/network/ifconfig/ifconfig.cpp	(revision 37980)
++++ src/bin/network/ifconfig/ifconfig.cpp	(working copy)
+@@ -109,7 +109,6 @@
+ }
+ 
+ 
+-
+ static bool
+ inet_parse_address(const char* string, sockaddr* _address)
+ {
+@@ -160,7 +159,7 @@
+ 	uint8 result = 0;
+ 	uint32 hostMask = ntohl(mask.sin_addr.s_addr);
+ 	for (uint8 i = 32; i > 0; i--) {
+-		if (hostMask & (1 << (i - 1)) == 0)
++		if ((hostMask & (1 << (i - 1))) == 0)
+ 			break;
+ 		result++;
+ 	}
+@@ -215,7 +214,7 @@
+ 
+ 	for (uint8 i = 0; i < sizeof(in6_addr); i++, prefixLength -= 8) {
+ 		if (prefixLength < 8) {
+-			const uint8 masks[] = {
++			static const uint8 masks[] = {
+ 				0x00, 0x80, 0xc0, 0xe0,
+ 				0xf0, 0xf8, 0xfc, 0xfe
+ 			};
+@@ -354,8 +353,8 @@
+ void
+ usage(int status)
+ {
+-	printf("usage: %s [<interface> [<address family>] [<address> [<mask>] | "
+-			"auto-config] [<option/flags>...]]\n"
++	printf("usage: %s [<interface> [<address family>] [add|delete] "
++		"[<address> [<mask>] | auto-config] [<option/flags>...]]\n"
+ 		"\t%s --delete interface [...]\n\n"
+ 		"Where <option> can be the following:\n"
+ 		"  netmask <addr>     - networking subnet mask\n"
+@@ -418,6 +417,19 @@
+ }
+ 
+ 
++const address_family*
++get_address_family(int32 family)
++{
++	for (int32 i = 0; kFamilies[i].family >= 0; i++) {
++		if (kFamilies[i].family == family)
++			return &kFamilies[i];
++	}
++
++	// defaults to AF_INET
++	return &kFamilies[0];
++}
++
++
+ bool
+ parse_address(int32 familyIndex, const char* argument, struct sockaddr& address)
+ {
+@@ -482,35 +494,44 @@
+ 
+ 
+ void
+-list_interface_address(int socket, const address_family* family,
+-	uint32 flags, ifreq* request)
++list_interface_address(int socket, uint32 flags, ifreq* request)
+ {
+-	if (ioctl(socket, SIOCGIFADDR, request, sizeof(struct ifreq)) < 0)
++	if (ioctl(socket, B_SOCKET_COUNT_ALIASES, request,
++			sizeof(struct ifreq)) < 0)
+ 		return;
+ 
+-	printf("\t%s addr: ", family->name);
+-	family->print_address(&request->ifr_addr);
++	ifaliasreq req;
++	memset(&req, 0, sizeof(ifaliasreq));
++	strlcpy(req.ifra_name, request->ifr_name, IF_NAMESIZE);
+ 
+-	if ((flags & IFF_BROADCAST) != 0
+-		&& ioctl(socket, SIOCGIFBRDADDR, request, sizeof(struct ifreq)) == 0
+-		&& request->ifr_broadaddr.sa_family == family->family) {
+-		printf(", Bcast: ");
+-		family->print_address(&request->ifr_broadaddr);
+-	}
+-	if (ioctl(socket, SIOCGIFNETMASK, request, sizeof(struct ifreq)) == 0
+-		&& request->ifr_mask.sa_family == family->family) {
++	for (int32 i = 0; i < request->ifr_count; i++) {
++		req.ifra_index = i;
++
++		if (ioctl(socket, B_SOCKET_GET_ALIAS, &req, sizeof(ifaliasreq)) < 0)
++			continue;
++
++		const address_family* family = get_address_family(req.ifra_addr.ss_family);
++
++		printf("\t%s addr: ", family->name);
++		family->print_address((sockaddr*)&req.ifra_addr);
++
++		if ((flags & IFF_BROADCAST) != 0) {
++			printf(", Bcast: ");
++			family->print_address((sockaddr*)&req.ifra_broadaddr);
++		}
+ 		switch (family->preferred_format) {
+ 			case PREFER_OUTPUT_MASK:
+ 				printf(", Mask: ");
+-				family->print_address(&request->ifr_mask);
++				family->print_address((sockaddr*)&req.ifra_mask);
+ 				break;
+ 			case PREFER_OUTPUT_PREFIX_LENGTH:
+ 				printf(", Prefix Length: %u",
+-					family->mask_to_prefix_length(&request->ifr_mask));
++					family->mask_to_prefix_length((sockaddr*)&req.ifra_mask));
+ 				break;
+ 		}
++
++		putchar('\n');
+ 	}
+-	putchar('\n');
+ }
+ 
+ 
+@@ -604,13 +625,7 @@
+ 	if (ioctl(socket, SIOCGIFFLAGS, &request, sizeof(struct ifreq)) == 0)
+ 		flags = request.ifr_flags;
+ 
+-	for (int32 i = 0; kFamilies[i].family >= 0; i++) {
+-		int familySocket = sAddressFamilySockets[i];
+-		if (familySocket != -1) {
+-			list_interface_address(familySocket, &kFamilies[i],
+-				flags, &request);
+-		}
+-	}
++	list_interface_address(socket, flags, &request);
+ 
+ 	// Print MTU, metric, flags
+ 
+@@ -809,6 +824,13 @@
+ 	struct sockaddr address, mask, peer, broadcast;
+ 	int mtu = -1, metric = -1, media = -1;
+ 	int addFlags = 0, currentFlags = 0, removeFlags = 0;
++	enum AddressAction
++	{
++		ADDRESS_SET,
++		ADDRESS_ADD,
++		ADDRESS_DELETE,
++	};
++	AddressAction addressAction = ADDRESS_SET;
+ 
+ 	if (index == 0) {
+ 		// the interface does not exist yet, we have to add it first
+@@ -816,6 +838,8 @@
+ 		memset(&request, 0, sizeof(ifaliasreq));
+ 		strlcpy(request.ifra_name, name, IF_NAMESIZE);
+ 
++		printf("the interface does not exist yet, we have to add it first\n");
++
+ 		if (ioctl(socket, SIOCAIFADDR, &request, sizeof(request)) < 0) {
+ 			fprintf(stderr, "%s: Could not add interface: %s\n", kProgramName,
+ 				strerror(errno));
+@@ -823,6 +847,16 @@
+ 		}
+ 	}
+ 
++	// try to extract action ("add" | "delete")
++	if (!strcmp(args[i], "add")) {
++		addressAction = ADDRESS_ADD;
++		i++;
++	} else if (!strcmp(args[i], "delete")) {
++		addressAction = ADDRESS_DELETE;
++		i++;
++	}
++
++
+ 	// try to parse address
+ 
+ 	if (parse_address(familyIndex, args[i], address)) {
+@@ -960,16 +994,70 @@
+ 
+ 	// set address/mask/broadcast/peer
+ 
+-	if (hasAddress) {
++	if (hasAddress && addressAction == ADDRESS_SET) {
++		// If an address for this family does not exist, add one
++		if (ioctl(socket, SIOCGIFADDR, &request, sizeof(struct ifreq)) < 0
++			&& errno == EINVAL) {
++			ifaliasreq request;
++			memset(&request, 0, sizeof(ifaliasreq));
++			strlcpy(request.ifra_name, name, IF_NAMESIZE);
++			// set dummy zero address
++			request.ifra_addr.ss_len = address.sa_len;
++			request.ifra_addr.ss_family = address.sa_family;
++
++			if (ioctl(socket, SIOCAIFADDR, &request, sizeof(ifaliasreq)) < 0) {
++				fprintf(stderr, "%s: Could not add interface adress: %s\n",
++					kProgramName, strerror(errno));
++				exit(1);
++			}
++		}
++
++		// change already existing address
+ 		memcpy(&request.ifr_addr, &address, address.sa_len);
+ 
+-		if (ioctl(socket, SIOCSIFADDR, &request, sizeof(struct ifreq)) < 0) {
+-			fprintf(stderr, "%s: Setting address failed: %s\n", kProgramName,
+-				strerror(errno));
++		if (ioctl(socket, SIOCSIFADDR, &request, sizeof(ifreq)) < 0) {
++			fprintf(stderr, "%s: Setting address failed: %s\n",
++				kProgramName, strerror(errno));
+ 			exit(1);
+ 		}
++	} 
++	else if (hasAddress && addressAction == ADDRESS_ADD) {
++		ifaliasreq request;
++		memset(&request, 0, sizeof(ifaliasreq));
++		strlcpy(request.ifra_name, name, IF_NAMESIZE);
++		memcpy(&request.ifra_addr, &address, address.sa_len);
++
++		if (hasMask) {
++			memcpy(&request.ifra_mask, &mask, mask.sa_len);
++			hasMask = false;
++		}
++		if (hasBroadcast) {
++			memcpy(&request.ifra_broadaddr, &broadcast, broadcast.sa_len);
++			hasBroadcast = false;
++		}
++		if (hasPeer) {
++			memcpy(&request.ifra_destination, &peer, peer.sa_len);
++			hasPeer = false;
++		}
++
++		if (ioctl(socket, SIOCAIFADDR, &request, sizeof(ifaliasreq)) < 0) {
++			fprintf(stderr, "%s: Could not add interface adress: %s\n",
++				kProgramName, strerror(errno));
++			exit(1);
++		}
+ 	}
++	else if (hasAddress && addressAction == ADDRESS_DELETE) {
++		memcpy(&request.ifr_addr, &address, address.sa_len);
+ 
++		if (ioctl(socket, SIOCDIFADDR, &request, sizeof(struct ifreq)) < 0) {
++			fprintf(stderr, "%s: Could not delete interface adress: %s\n",
++				kProgramName, strerror(errno));
++			exit(1);
++		}
++
++		hasMask = hasBroadcast = hasPeer = false;
++	}
++
+ 	if (ioctl(socket, SIOCGIFFLAGS, &request, sizeof(struct ifreq)) < 0) {
+ 		fprintf(stderr, "%s: Getting flags failed: %s\n", kProgramName,
+ 			strerror(errno));
+@@ -1052,8 +1140,7 @@
+ 		BMessage message(kMsgConfigureInterface);
+ 		message.AddString("device", name);
+ 		BMessage address;
+-		// TODO: this is not working for ipv6 yet
+-		address.AddString("family", "inet");
++		address.AddString("family", kFamilies[familyIndex].name);
+ 		address.AddBool("auto_config", true);
+ 		message.AddMessage("address", &address);
+ 
+Index: src/bin/network/route/route.cpp
+===================================================================
+--- src/bin/network/route/route.cpp	(revision 37980)
++++ src/bin/network/route/route.cpp	(working copy)
+@@ -198,7 +198,7 @@
+ 
+ 	for (uint8 i = 0; i < sizeof(in6_addr); i++, prefixLength -= 8) {
+ 		if (prefixLength < 8) {
+-			const uint8 masks[] = {
++			static const uint8 masks[] = {
+ 				0x00, 0x80, 0xc0, 0xe0,
+ 				0xf0, 0xf8, 0xfc, 0xfe
+ 			};
+Index: src/servers/net/NetServer.cpp
+===================================================================
+--- src/servers/net/NetServer.cpp	(revision 37980)
++++ src/servers/net/NetServer.cpp	(working copy)
+@@ -98,6 +98,11 @@
+ static void inet_set_any_address(sockaddr* address);
+ static void inet_set_port(sockaddr* address, int32 port);
+ 
++// AF_INET6 family
++static bool inet6_parse_address(const char* string, sockaddr* address);
++static void inet6_set_any_address(sockaddr* address);
++static void inet6_set_port(sockaddr* address, int32 port);
++
+ static const address_family kFamilies[] = {
+ 	{
+ 		AF_INET,
+@@ -107,6 +112,14 @@
+ 		inet_set_any_address,
+ 		inet_set_port
+ 	},
++	{
++		AF_INET6,
++		"inet6",
++		{"AF_INET6", "inet6", "ipv6", NULL},
++		inet6_parse_address,
++		inet6_set_any_address,
++		inet6_set_port
++	},
+ 	{ -1, NULL, {NULL}, NULL }
+ };
+ 
+@@ -150,6 +163,42 @@
+ }
+ 
+ 
++static bool
++inet6_parse_address(const char* string, sockaddr* _address)
++{
++	sockaddr_in6& address = *(sockaddr_in6*)_address;
++
++	if (inet_pton(AF_INET6, string, &address.sin6_addr) != 1)
++		return false;
++
++	address.sin6_family = AF_INET6;
++	address.sin6_len = sizeof(sockaddr_in6);
++	address.sin6_port = 0;
++	address.sin6_flowinfo = 0;
++	address.sin6_scope_id = 0;
++
++	return true;
++}
++
++
++void
++inet6_set_any_address(sockaddr* _address)
++{
++	sockaddr_in6& address = *(sockaddr_in6*)_address;
++	memset(&address, 0, sizeof(sockaddr_in6));
++	address.sin6_family = AF_INET6;
++	address.sin6_len = sizeof(struct sockaddr_in6);
++}
++
++
++void
++inet6_set_port(sockaddr* _address, int32 port)
++{
++	sockaddr_in6& address = *(sockaddr_in6*)_address;
++	address.sin6_port = port;
++}
++
++
+ //	#pragma mark -
+ 
+ 
+@@ -697,6 +746,23 @@
+ 		// set addresses
+ 
+ 		if (hasAddress) {
++			// If an address for this family does not exist, add one
++			if (ioctl(socket, SIOCGIFADDR, &request, sizeof(struct ifreq)) < 0
++				&& errno == EINVAL) {
++				ifaliasreq request;
++				memset(&request, 0, sizeof(ifaliasreq));
++				strlcpy(request.ifra_name, device, IF_NAMESIZE);
++				// set dummy zero address
++				request.ifra_addr.ss_len = address.sa_len;
++				request.ifra_addr.ss_family = address.sa_family;
++
++				if (ioctl(socket, SIOCAIFADDR, &request, sizeof(ifaliasreq)) < 0) {
++					fprintf(stderr, "%s: Adding address failed: %s\n",
++						Name(), strerror(errno));
++					continue;
++				}
++			}
++
+ 			memcpy(&request.ifr_addr, &address, address.sa_len);
+ 
+ 			if (ioctl(familySocket, SIOCSIFADDR, &request, sizeof(struct ifreq)) < 0) {
+@@ -944,6 +1010,22 @@
+ 		interface.AddMessage("address", &address);
+ 
+ 		_ConfigureInterface(socket, interface);
++
++#if INET6
++		int socket6 = ::socket(AF_INET6, SOCK_DGRAM, 0);
++		if (socket6 >= 0) {
++			BMessage interface6;
++			interface6.AddString("device", "loop");
++			BMessage address6;
++			address6.AddString("family", "inet6");
++			address6.AddString("address", "::1");
++			interface6.AddMessage("address", &address6);
++
++			_ConfigureInterface(socket6, interface6);
++
++			close(socket6);
++		}
++#endif
+ 	}
+ 
+ 	// TODO: also check if the networking driver is correctly initialized!
+Index: src/servers/net/AutoconfigLooper.cpp
+===================================================================
+--- src/servers/net/AutoconfigLooper.cpp	(revision 37980)
++++ src/servers/net/AutoconfigLooper.cpp	(working copy)
+@@ -32,6 +32,7 @@
+ 	fDevice(device),
+ 	fCurrentClient(NULL)
+ {
++	memset(fCurrentMac, 0, sizeof(fCurrentMac));
+ 	BMessage ready(kMsgReadyToRun);
+ 	PostMessage(&ready);
+ }
+@@ -55,7 +56,7 @@
+ 
+ 
+ void
+-AutoconfigLooper::_Configure()
++AutoconfigLooper::_ConfigureIPv4()
+ {
+ 	ifreq request;
+ 	if (!prepare_request(request, fDevice.String()))
+@@ -134,11 +135,157 @@
+ }
+ 
+ 
++#ifdef INET6
++static in6_addr
++BuildIPv6LinkLocalAddress(uint8 mac[6])
++{	
++	in6_addr result;
++
++	result.s6_addr[0] = 0xfe;
++	result.s6_addr[1] = 0x80;
++	result.s6_addr[2] = 0;
++	result.s6_addr[3] = 0;
++	result.s6_addr[4] = 0;
++	result.s6_addr[5] = 0;
++	result.s6_addr[6] = 0;
++	result.s6_addr[7] = 0;
++
++	result.s6_addr[8] = mac[0] ^ 0x02;
++	result.s6_addr[9] = mac[1];
++	result.s6_addr[10] = mac[2];
++	result.s6_addr[11] = 0xff;
++	result.s6_addr[12] = 0xfe;
++	result.s6_addr[13] = mac[3];
++	result.s6_addr[14] = mac[4];
++	result.s6_addr[15] = mac[5];
++
++	return result;
++}
++
++
+ void
++AutoconfigLooper::_ConfigureIPv6LinkLocal(bool add)
++{
++	// do not touch the loopback device
++	if (!strncmp(fDevice.String(), "loop", 4))
++		return;
++
++	ifreq request;
++	if (!prepare_request(request, fDevice.String()))
++		return;
++
++	int socket = ::socket(AF_INET6, SOCK_DGRAM, 0);
++	if (socket < 0)
++		return;
++
++	// set IFF_CONFIGURING flag on interface
++	if (ioctl(socket, SIOCGIFFLAGS, &request, sizeof(struct ifreq)) == 0) {
++		request.ifr_flags |= IFF_CONFIGURING;
++		ioctl(socket, SIOCSIFFLAGS, &request, sizeof(struct ifreq));
++	}
++
++	uint8 mac[6];
++	memcpy(mac, fCurrentMac, 6);
++	if (add == true) {
++		if (get_mac_address(fDevice.String(), mac) != B_OK)
++			add = false;
++	}
++
++	if (add == true) {
++		in6_addr inetAddress = BuildIPv6LinkLocalAddress(mac);
++		if (_AddIPv6LinkLocal(socket, inetAddress) != true)
++			add = false;
++
++		// save the MAC address for later usage
++		memcpy(fCurrentMac, mac, 6);
++	}
++
++	if (add == false) {
++		static const uint8 zeroMac[6] = {0};
++		if (memcmp(fCurrentMac, zeroMac, 6)) {
++			in6_addr inetAddress = BuildIPv6LinkLocalAddress(fCurrentMac);
++			_RemoveIPv6LinkLocal(socket, inetAddress);
++			// reset the stored MAC address
++			memcpy(fCurrentMac, zeroMac, 6);
++		}
++	}
++
++	if (ioctl(socket, SIOCGIFFLAGS, &request, sizeof(struct ifreq)) == 0
++		&& (request.ifr_flags & IFF_CONFIGURING) == 0) {
++		// Someone else configured the interface in the mean time
++		close(socket);
++		return;
++	}
++
++	close(socket);
++}
++
++
++bool
++AutoconfigLooper::_AddIPv6LinkLocal(int socket, const in6_addr &address)
++{
++	struct ifreq request;
++	if (!prepare_request(request, fDevice.String()))
++		return false;
++
++	ifaliasreq aliasRequest;
++	memset(&aliasRequest, 0, sizeof(ifaliasreq));
++	strlcpy(aliasRequest.ifra_name, fDevice.String(), IF_NAMESIZE);
++	aliasRequest.ifra_addr.ss_len = sizeof(sockaddr_in6);
++	aliasRequest.ifra_addr.ss_family = AF_INET6;
++
++	if (ioctl(socket, SIOCAIFADDR, &aliasRequest, sizeof(ifaliasreq)) < 0) {
++		if (errno != B_NAME_IN_USE)
++			return false;
++	}
++
++	sockaddr_in6* socketAddress = (sockaddr_in6*)&request.ifr_addr;
++	socketAddress->sin6_len = sizeof(sockaddr_in6);
++	socketAddress->sin6_family = AF_INET6;
++
++	// address
++	memcpy(&socketAddress->sin6_addr, &address, sizeof(in6_addr)); 
++	if (ioctl(socket, SIOCSIFADDR, &request, sizeof(struct ifreq)) < 0)
++		return false;
++
++	// mask (/64)
++	memset(socketAddress->sin6_addr.s6_addr, 0xff, 8);
++	memset(socketAddress->sin6_addr.s6_addr + 8, 0, 8);
++
++	if (ioctl(socket, SIOCSIFNETMASK, &request, sizeof(struct ifreq)) < 0)
++		return false;
++
++	return true;
++}
++
++
++void
++AutoconfigLooper::_RemoveIPv6LinkLocal(int socket, const in6_addr &address)
++{
++	struct ifreq request;
++	if (!prepare_request(request, fDevice.String()))
++		return;
++
++	sockaddr_in6* socketAddress = (sockaddr_in6*)&request.ifr_addr;
++	socketAddress->sin6_len = sizeof(sockaddr_in6);
++	socketAddress->sin6_family = AF_INET6;
++
++	// address
++	memcpy(&socketAddress->sin6_addr, &address, sizeof(in6_addr)); 
++	if (ioctl(socket, SIOCDIFADDR, &request, sizeof(struct ifreq)) < 0)
++		return;
++}
++#endif // INET6
++
++
++void
+ AutoconfigLooper::_ReadyToRun()
+ {
+ 	start_watching_network(B_WATCH_NETWORK_LINK_CHANGES, this);
+-	_Configure();
++	_ConfigureIPv4();
++#ifdef INET6
++	_ConfigureIPv6LinkLocal(true);
++#endif
+ }
+ 
+ 
+@@ -163,8 +310,11 @@
+ 
+ 			if ((media & IFM_ACTIVE) != 0) {
+ 				// Reconfigure the interface when we have a link again
+-				_Configure();
++				_ConfigureIPv4();
+ 			}
++#ifdef INET6
++			_ConfigureIPv6LinkLocal((media & IFM_ACTIVE) != 0);
++#endif
+ 			break;
+ 
+ 		default:
+Index: src/servers/net/AutoconfigLooper.h
+===================================================================
+--- src/servers/net/AutoconfigLooper.h	(revision 37980)
++++ src/servers/net/AutoconfigLooper.h	(working copy)
+@@ -12,6 +12,7 @@
+ #include <Looper.h>
+ #include <Messenger.h>
+ #include <String.h>
++#include <netinet6/in6.h>
+ 
+ class AutoconfigClient;
+ 
+@@ -27,12 +28,16 @@
+ 
+ private:
+ 			void				_RemoveClient();
+-			void				_Configure();
++			void				_ConfigureIPv4();
++			void				_ConfigureIPv6LinkLocal(bool add);
++			bool				_AddIPv6LinkLocal(int socket, const in6_addr &);
++			void				_RemoveIPv6LinkLocal(int socket, const in6_addr &);
+ 			void				_ReadyToRun();
+ 
+ 			BMessenger			fTarget;
+ 			BString				fDevice;
+ 			AutoconfigClient*	fCurrentClient;
++			uint8				fCurrentMac[6];
+ };
+ 
+ #endif	// AUTOCONFIG_LOOPER_H
+Index: src/servers/net/Jamfile
+===================================================================
+--- src/servers/net/Jamfile	(revision 37980)
++++ src/servers/net/Jamfile	(working copy)
+@@ -6,6 +6,11 @@
+ #UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel network ppp shared libkernelppp headers ] ;
+ #UseHeaders [ FDirName $(HAIKU_TOP) src tests kits net DialUpPreflet ] ;
+ 
++#local defines = [ FDefines INET6=1 ] ;
++
++SubDirCcFlags $(defines) ;
++SubDirC++Flags $(defines) ;
++
+ AddResources net_server : net_server.rdef ;
+ 
+ Server net_server :
